@@ -1,7 +1,7 @@
 import random
 
 from pysc2.agents.base_agent import BaseAgent
-from pysc2.lib import actions, features, units
+from pysc2.lib import actions, features
 from pysc2.env import sc2_env, run_loop
 
 
