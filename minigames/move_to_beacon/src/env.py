@@ -13,7 +13,7 @@ class MoveToBeaconEnv(gym.Env):
 
     metadata = {'render.modes': ['human']}
 
-    def __init__(self, step_mul: int = 8, raw_resolution: int = 64):
+    def __init__(self, step_mul: int = 8, raw_resolution: int = 64, realtime: bool = False):
         self.settings = {
             'map_name': "MoveToBeacon",
             'players': [sc2_env.Agent(sc2_env.Race.terran)],
@@ -21,7 +21,7 @@ class MoveToBeaconEnv(gym.Env):
                 action_space=actions.ActionSpace.RAW,
                 use_raw_units=True,
                 raw_resolution=raw_resolution),
-            'realtime': False,
+            'realtime': realtime,
             'step_mul': step_mul
         }
         self.raw_resolution = raw_resolution
@@ -36,6 +36,7 @@ class MoveToBeaconEnv(gym.Env):
 
     def step(self, action: np.ndarray):
         raw_obs = self.env.step([actions.RAW_FUNCTIONS.Move_pt("now", self.unit_tag, action * self.raw_resolution)])[0]
+        self.update_unit_tag(raw_obs)
         derived_obs = self.get_derived_obs(raw_obs)
         self.logger.debug(f"Action: {action}, Reward: {raw_obs.reward}, Obs: {derived_obs}")
         return derived_obs, raw_obs.reward, raw_obs.last(), {}
@@ -45,7 +46,7 @@ class MoveToBeaconEnv(gym.Env):
             self.init_env()
 
         raw_obs = self.env.reset()[0]
-        self.unit_tag = self.get_unit(raw_obs).tag
+        self.update_unit_tag(raw_obs)
         return self.get_derived_obs(raw_obs)
 
     def get_derived_obs(self, raw_obs):
@@ -68,3 +69,6 @@ class MoveToBeaconEnv(gym.Env):
     @staticmethod
     def get_target(raw_obs):
         return [unit for unit in raw_obs.observation.raw_units if unit.unit_type == 317][0]
+
+    def update_unit_tag(self, raw_obs):
+        self.unit_tag = self.get_unit(raw_obs).tag
