@@ -1,14 +1,17 @@
+import random
 from pprint import pprint
 from typing import Dict, Any, Union, Callable, Optional
 import os
 import pickle as pkl
 import gym
 import optuna
+import time
 from optuna.pruners import MedianPruner
 from optuna.samplers import TPESampler
-from optuna.visualization import plot_optimization_history, plot_param_importances
+from optuna.visualization import plot_optimization_history, plot_param_importances, plot_parallel_coordinate
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import EvalCallback, StopTrainingOnNoModelImprovement, BaseCallback
+from stable_baselines3.common.monitor import Monitor
 from torch import nn as nn
 
 from minigames.move_to_beacon.src.env import MoveToBeaconEnv
@@ -19,7 +22,7 @@ FLAGS = flags.FLAGS
 FLAGS(sys.argv)
 
 
-study_path = "minigames/move_to_beacon/optuna/2"
+study_path = "minigames/move_to_beacon/optuna/4"
 
 
 def linear_schedule(initial_value: Union[float, str]) -> Callable[[float], float]:
@@ -159,6 +162,9 @@ class TrialEvalCallback(EvalCallback):
 
 
 def objective(trial: optuna.Trial) -> float:
+
+    time.sleep(random.random() * 16)
+
     step_mul = trial.suggest_int("step_mul", 1, 16)
     raw_resolution = trial.suggest_categorical("raw_resolution", [8, 16, 32, 64, 128])
     env_kwargs = {"step_mul": step_mul, "raw_resolution": raw_resolution}
@@ -169,12 +175,13 @@ def objective(trial: optuna.Trial) -> float:
     os.makedirs(path, exist_ok=True)
 
     env = MoveToBeaconEnv(**env_kwargs)
-    model = PPO("MlpPolicy", env=env, seed=None, verbose=0, **sampled_hyperparams)
+    env = Monitor(env)
+    model = PPO("MlpPolicy", env=env, seed=None, verbose=0, tensorboard_log=path, **sampled_hyperparams)
 
-    stop_callback = StopTrainingOnNoModelImprovement(max_no_improvement_evals=3, min_evals=5, verbose=1)
+    stop_callback = StopTrainingOnNoModelImprovement(max_no_improvement_evals=30, min_evals=50, verbose=1)
     eval_callback = TrialEvalCallback(
         env, trial, best_model_save_path=path, log_path=path,
-        n_eval_episodes=5, eval_freq=100000, deterministic=False, callback_after_eval=stop_callback
+        n_eval_episodes=5, eval_freq=10000, deterministic=False, callback_after_eval=stop_callback
     )
 
     params = env_kwargs | sampled_hyperparams
@@ -206,8 +213,8 @@ def objective(trial: optuna.Trial) -> float:
 
 if __name__ == "__main__":
 
-    sampler = TPESampler(n_startup_trials=0, multivariate=False)
-    pruner = MedianPruner(n_startup_trials=0)
+    sampler = TPESampler(n_startup_trials=10, multivariate=True)
+    pruner = MedianPruner(n_startup_trials=10, n_warmup_steps=10)
 
     study = optuna.create_study(
         sampler=sampler,
@@ -217,15 +224,14 @@ if __name__ == "__main__":
     )
 
     try:
-        study.optimize(objective, n_jobs=4, n_trials=100)
+        study.optimize(objective, n_jobs=4, n_trials=128)
     except KeyboardInterrupt:
         pass
 
     print("Number of finished trials: ", len(study.trials))
 
-    print("Best trial:")
     trial = study.best_trial
-
+    print(f"Best trial: {trial.number}")
     print("Value: ", trial.value)
 
     print("Params: ")
@@ -240,8 +246,12 @@ if __name__ == "__main__":
     try:
         fig1 = plot_optimization_history(study)
         fig2 = plot_param_importances(study)
+        fig3 = plot_parallel_coordinate(study)
 
         fig1.show()
         fig2.show()
-    except (ValueError, ImportError, RuntimeError):
-        pass
+        fig3.show()
+
+    except (ValueError, ImportError, RuntimeError) as e:
+        print("Error during plotting")
+        print(e)
