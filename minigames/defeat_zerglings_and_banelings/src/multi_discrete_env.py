@@ -1,8 +1,3 @@
-# -*- coding: utf-8 -*-
-# @Author: fyr91
-# @Date:   2019-10-04 15:55:09
-# @Last Modified by:   fyr91
-# @Last Modified time: 2019-11-24 21:21:24
 import gym
 from pysc2.env import sc2_env
 from pysc2.lib import actions, features, units
@@ -13,7 +8,7 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 
-class DZBEnv(gym.Env):
+class MultiDiscreteEnv(gym.Env):
     metadata = {'render.modes': ['human']}
     default_settings = {
         'map_name': "DefeatZerglingsAndBanelings",
@@ -33,10 +28,8 @@ class DZBEnv(gym.Env):
         self.marines = []
         self.banelings = []
         self.zerglings = []
-        # 0 no operation
-        # 1~32 move
-        # 33~122 attack
-        self.action_space = spaces.Discrete(123)
+        # 10 marines, 4 moves, 9 enemies
+        self.action_space = spaces.MultiDiscrete([10, 4 + 13])
         # [0: x, 1: y, 2: hp]
         self.observation_space = spaces.Box(
             low=0,
@@ -83,7 +76,7 @@ class DZBEnv(gym.Env):
 
         return obs
 
-    def step(self, action):
+    def step(self, action: np.ndarray):
         raw_obs = self.take_action(action)
         reward = raw_obs.reward
         obs = self.get_derived_obs(raw_obs)
@@ -91,23 +84,19 @@ class DZBEnv(gym.Env):
         return obs, reward, raw_obs.last(), {}
 
     def take_action(self, action):
-        if action == 0:
-            action_mapped = actions.RAW_FUNCTIONS.no_op()
-        elif action<=32:
-            derived_action = (action-1)//8
-            idx = (action-1)%8
-            if derived_action == 0:
-                action_mapped = self.move_up(idx)
-            elif derived_action == 1:
-                action_mapped = self.move_down(idx)
-            elif derived_action == 2:
-                action_mapped = self.move_left(idx)
-            else:
-                action_mapped = self.move_right(idx)
+        u_idx = action[0]
+        a_idx = action[1]
+
+        if a_idx == 0:
+            action_mapped = self.move_up(u_idx)
+        elif a_idx == 1:
+            action_mapped = self.move_down(u_idx)
+        elif a_idx == 2:
+            action_mapped = self.move_left(u_idx)
+        elif a_idx == 3:
+            action_mapped = self.move_right(u_idx)
         else:
-            eidx = (action-33)//9
-            aidx = (action-33)%9
-            action_mapped = self.attack(aidx, eidx)
+            action_mapped = self.attack(u_idx, a_idx - 4)
 
         raw_obs = self.env.step([action_mapped])[0]
         return raw_obs
@@ -159,11 +148,11 @@ class DZBEnv(gym.Env):
     def attack(self, aidx, eidx):
         try:
             selected = self.marines[aidx]
-            if eidx>3:
-                # attack zerglines
+            if eidx > 3:
+                # attack zerglings
                 target = self.zerglings[eidx-4]
             else:
-                target = self.zerglings[eidx]
+                target = self.banelings[eidx]
             return actions.RAW_FUNCTIONS.Attack_unit("now", selected.tag, target.tag)
         except IndexError:
             pass

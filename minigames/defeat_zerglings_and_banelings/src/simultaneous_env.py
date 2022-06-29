@@ -1,8 +1,6 @@
-# -*- coding: utf-8 -*-
-# @Author: fyr91
-# @Date:   2019-10-04 15:55:09
-# @Last Modified by:   fyr91
-# @Last Modified time: 2019-11-24 21:21:24
+from collections import defaultdict
+from typing import List, Dict
+
 import gym
 from pysc2.env import sc2_env
 from pysc2.lib import actions, features, units
@@ -13,37 +11,36 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 
-class DZBEnv(gym.Env):
+class SimultaneousEnv(gym.Env):
     metadata = {'render.modes': ['human']}
-    default_settings = {
-        'map_name': "DefeatZerglingsAndBanelings",
-        'players': [sc2_env.Agent(sc2_env.Race.terran),
-                    sc2_env.Bot(sc2_env.Race.zerg, sc2_env.Difficulty.hard)],
-        'agent_interface_format': features.AgentInterfaceFormat(
-            action_space=actions.ActionSpace.RAW,
-            use_raw_units=True,
-            raw_resolution=64),
-        'realtime': False
-    }
 
-    def __init__(self, **kwargs):
+    def __init__(self, raw_resolution: int = 64, **kwargs):
         super().__init__()
         self.kwargs = kwargs
         self.env = None
         self.marines = []
         self.banelings = []
         self.zerglings = []
-        # 0 no operation
-        # 1~32 move
-        # 33~122 attack
-        self.action_space = spaces.Discrete(123)
+        self.raw_resolution = raw_resolution
+        # 10 marines, 4 moves, 9 enemies, 1 noop
+        self.action_space = spaces.MultiDiscrete([14] * 9)
         # [0: x, 1: y, 2: hp]
         self.observation_space = spaces.Box(
             low=0,
-            high=64,
+            high=1,
             shape=(19, 3),
-            dtype=np.uint8
+            dtype=np.float
         )
+        self.settings = {
+            'map_name': "DefeatZerglingsAndBanelings",
+            'players': [sc2_env.Agent(sc2_env.Race.terran),
+                        sc2_env.Bot(sc2_env.Race.zerg, sc2_env.Difficulty.hard)],
+            'agent_interface_format': features.AgentInterfaceFormat(
+                action_space=actions.ActionSpace.RAW,
+                use_raw_units=True,
+                raw_resolution=self.raw_resolution),
+            'realtime': False
+        }
 
     def reset(self):
         if self.env is None:
@@ -57,11 +54,11 @@ class DZBEnv(gym.Env):
         return self.get_derived_obs(raw_obs)
 
     def init_env(self):
-        args = {**self.default_settings, **self.kwargs}
+        args = {**self.settings, **self.kwargs}
         self.env = sc2_env.SC2Env(**args)
 
     def get_derived_obs(self, raw_obs):
-        obs = np.zeros((19, 3), dtype=np.uint8)
+        obs = np.zeros((19, 3), dtype=np.float)
         marines = self.get_units_by_type(raw_obs, units.Terran.Marine, 1)
         zerglings = self.get_units_by_type(raw_obs, units.Zerg.Zergling, 4)
         banelings = self.get_units_by_type(raw_obs, units.Zerg.Baneling, 4)
@@ -71,43 +68,49 @@ class DZBEnv(gym.Env):
 
         for i, m in enumerate(marines):
             self.marines.append(m)
-            obs[i] = np.array([m.x, m.y, m[2]])
+            obs[i] = np.array([m.x / self.raw_resolution, m.y / self.raw_resolution, m[2] / 45])
 
         for i, b in enumerate(banelings):
             self.banelings.append(b)
-            obs[i+9] = np.array([b.x, b.y, b[2]])
+            obs[i+9] = np.array([b.x / self.raw_resolution, b.y / self.raw_resolution, b[2] / 30])
 
         for i, z in enumerate(zerglings):
             self.zerglings.append(z)
-            obs[i+13] = np.array([z.x, z.y, z[2]])
+            obs[i+13] = np.array([z.x / self.raw_resolution, z.y / self.raw_resolution, z[2] / 35])
 
         return obs
 
-    def step(self, action):
+    def step(self, action: np.ndarray):
         raw_obs = self.take_action(action)
         reward = raw_obs.reward
         obs = self.get_derived_obs(raw_obs)
         # each step will set the dictionary to emtpy
         return obs, reward, raw_obs.last(), {}
 
-    def take_action(self, action):
-        if action == 0:
-            action_mapped = actions.RAW_FUNCTIONS.no_op()
-        elif action<=32:
-            derived_action = (action-1)//8
-            idx = (action-1)%8
-            if derived_action == 0:
-                action_mapped = self.move_up(idx)
-            elif derived_action == 1:
-                action_mapped = self.move_down(idx)
-            elif derived_action == 2:
-                action_mapped = self.move_left(idx)
+    def take_action(self, action: np.ndarray):
+
+        attack_indices: Dict[int, List[int]] = defaultdict(list)
+
+        action_mapped: List = []
+
+        for u_idx, a_idx in enumerate(action):
+
+            if a_idx == 0:
+                pass
+            elif a_idx == 1:
+                action_mapped.append(self.move_up(u_idx))
+            elif a_idx == 2:
+                action_mapped.append(self.move_down(u_idx))
+            elif a_idx == 3:
+                action_mapped.append(self.move_left(u_idx))
+            elif a_idx == 4:
+                action_mapped.append(self.move_right(u_idx))
             else:
-                action_mapped = self.move_right(idx)
-        else:
-            eidx = (action-33)//9
-            aidx = (action-33)%9
-            action_mapped = self.attack(aidx, eidx)
+                target_index = a_idx - 5
+                attack_indices[target_index].append(u_idx)
+
+        for target_index, unit_indices in attack_indices.items():
+            action_mapped.append(self.attack(unit_indices, target_index))
 
         raw_obs = self.env.step([action_mapped])[0]
         return raw_obs
@@ -156,15 +159,17 @@ class DZBEnv(gym.Env):
             logger.warning(f"Action move_right not successful: {e}")
         return actions.RAW_FUNCTIONS.no_op()
 
-    def attack(self, aidx, eidx):
+    def attack(self, unit_indices: List[int], target_index: int):
         try:
-            selected = self.marines[aidx]
-            if eidx>3:
-                # attack zerglines
-                target = self.zerglings[eidx-4]
+            selected_tags = [unit.tag for uidx, unit in enumerate(self.marines) if uidx in unit_indices]
+            if len(selected_tags) == 0:
+                return actions.RAW_FUNCTIONS.no_op()
+            if target_index > 3:
+                # attack zerglings
+                target = self.zerglings[target_index-4]
             else:
-                target = self.zerglings[eidx]
-            return actions.RAW_FUNCTIONS.Attack_unit("now", selected.tag, target.tag)
+                target = self.banelings[target_index]
+            return actions.RAW_FUNCTIONS.Attack_unit("now", selected_tags, target.tag)
         except IndexError:
             pass
         except Exception as e:
