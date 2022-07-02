@@ -44,8 +44,11 @@ class CollectMineralShardsEnv(gym.Env):
     def init_env(self):
         self.env = sc2_env.SC2Env(**self.settings)
 
-    def step(self, action: np.ndarray):
-        self.last_raw_obs = self.env.step(self.get_actions(action))[0]
+    def step(self, action: Optional[np.ndarray] = None):
+        if action is not None:
+            self.last_raw_obs = self.env.step(self.get_actions(action))[0]
+        else:
+            self.last_raw_obs = self.env.step([])
         self.update_unit_tag(self.last_raw_obs)
         derived_obs = self.get_derived_obs(self.last_raw_obs)
         return derived_obs, self.last_raw_obs.reward, self.last_raw_obs.last(), {}
