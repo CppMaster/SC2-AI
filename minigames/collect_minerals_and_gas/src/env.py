@@ -10,7 +10,7 @@ from pysc2.lib import actions, features
 import numpy as np
 import logging
 
-from pysc2.lib.features import Dimensions, Player, UnitLayer, FeatureUnit
+from pysc2.lib.features import Player, UnitLayer, FeatureUnit
 from pysc2.lib.units import Terran, Neutral
 
 
@@ -33,17 +33,22 @@ class ObservationIndex(IntEnum):
     IS_REFINERY_BUILDING = 7
 
 
+class OrderId(IntEnum):
+    HARVEST_MINERALS = 359
+    HARVEST_RETURN = 362
+
+
 class CollectMineralAndGasEnv(gym.Env):
 
     metadata = {'render.modes': ['human']}
+    supply_depot_locations = np.array([[29, 31], [29, 42], [31, 31], [31, 42], [33, 31], [33, 42], [35, 31], [35, 42]])
+    cc_location = np.array([35, 36])
 
     def __init__(self, step_mul: int = 8, realtime: bool = False, resolution: int = 32, random_order=False):
         self.settings = {
             'map_name': "CollectMineralsAndGas",
             'players': [sc2_env.Agent(sc2_env.Race.terran)],
             'agent_interface_format': features.AgentInterfaceFormat(
-                feature_dimensions=Dimensions(screen=(resolution, resolution), minimap=(resolution, resolution)),
-                raw_resolution=resolution,
                 action_space=actions.ActionSpace.RAW,
                 use_raw_units=True,
                 crop_to_playable_area=True
@@ -58,6 +63,9 @@ class CollectMineralAndGasEnv(gym.Env):
         self.logger = logging.getLogger("CollectMineralsAndGas")
         self.raw_obs = None
         self.random_order = random_order
+        self.supply_depot_index = 0
+        self.cc_started = False
+        self.refinery_index = 0
 
     def init_env(self):
         self.env = sc2_env.SC2Env(**self.settings)
@@ -73,11 +81,15 @@ class CollectMineralAndGasEnv(gym.Env):
             mapped_actions.append(self.build_scv(0))
         if action[ActionIndex.BUILD_SCV_2]:
             mapped_actions.append(self.build_scv(1))
+        if action[ActionIndex.BUILD_SUPPLY]:
+            mapped_actions.append(self.build_supply_depot())
+        if action[ActionIndex.BUILD_CC]:
+            mapped_actions.append(self.build_cc())
+        if action[ActionIndex.BUILD_REFINERY]:
+            mapped_actions.append(self.build_refinery())
         '''
-        TODO fill mapped_actions
-        build cc
-        build refinery
-        build supply depot
+        TODO:
+        -Action for reassigning workers to opposite minerals or refinery
         '''
         mapped_actions = list(filter(lambda x: x is not None, mapped_actions))
         if self.random_order:
@@ -87,6 +99,8 @@ class CollectMineralAndGasEnv(gym.Env):
     def build_scv(self, ccidx: int):
         player = self.raw_obs.observation.player
         if player[Player.food_cap] - player[Player.food_used] < 1:
+            return None
+        if player[Player.minerals] < 50:
             return None
 
         ccs = self.get_units(Terran.CommandCenter)
@@ -111,10 +125,66 @@ class CollectMineralAndGasEnv(gym.Env):
             ))
         return orders
 
+    def build_supply_depot(self):
+        if self.raw_obs.observation.player[Player.minerals] < 100:
+            return None
+        if self.supply_depot_index >= len(self.supply_depot_locations):
+            return None
+        location = self.supply_depot_locations[self.supply_depot_index]
+        worker = self.get_nearest_worker(location)
+        if worker is None:
+            self.logger.warning(f"Free worker not found")
+            return None
+        self.supply_depot_index += 1
+        return actions.RAW_FUNCTIONS.Build_SupplyDepot_pt("now", worker[FeatureUnit.tag], location)
+
+    def build_cc(self):
+        if self.raw_obs.observation.player[Player.minerals] < 400:
+            return None
+        if self.cc_started:
+            return None
+        worker = self.get_nearest_worker(self.cc_location)
+        self.cc_started = True
+        return actions.RAW_FUNCTIONS.Build_CommandCenter_pt("now", worker[FeatureUnit.tag], self.cc_location)
+
+    def build_refinery(self):
+        if self.raw_obs.observation.player[Player.minerals] < 75:
+            return None
+        if self.refinery_index >= 4:
+            return None
+        geysers = sorted(self.get_units(Neutral.VespeneGeyser), key=lambda u: (u[FeatureUnit.x], u[FeatureUnit.y]))
+        geyser = geysers[self.refinery_index]
+        location = np.array([geyser[FeatureUnit.x], geyser[FeatureUnit.y]])
+        worker = self.get_nearest_worker(location)
+        self.refinery_index += 1
+        return actions.RAW_FUNCTIONS.Build_Refinery_pt("now", worker[FeatureUnit.tag], geyser[FeatureUnit.tag])
+
+    def get_nearest_worker(self, location: np.ndarray):
+        all_workers = self.get_units(Terran.SCV)
+        idle_workers = list(filter(lambda u: u[FeatureUnit.order_length] == 0, all_workers))
+        worker = self.get_nearest_worker_from_list(location, idle_workers)
+        if worker is not None:
+            return worker
+        workers_mining = list(filter(lambda u: u[FeatureUnit.order_id_0] == OrderId.HARVEST_MINERALS, all_workers))
+        worker = self.get_nearest_worker_from_list(location, workers_mining)
+        if worker is not None:
+            return worker
+        return None
+
+    @staticmethod
+    def get_nearest_worker_from_list(location: np.ndarray, workers: List):
+        if len(workers) == 0:
+            return None
+        worker_positions = np.array([[worker[FeatureUnit.x], worker[FeatureUnit.y]] for worker in workers])
+        return workers[np.sum(np.power(worker_positions - location, 2), axis=1).argmin()]
+
     def reset(self):
         if self.env is None:
             self.init_env()
 
+        self.supply_depot_index = 0
+        self.cc_started = False
+        self.refinery_index = 0
         self.raw_obs = self.env.reset()[0]
         return self.get_derived_obs()
 
@@ -129,7 +199,7 @@ class CollectMineralAndGasEnv(gym.Env):
         obs[ObservationIndex.SCV_COUNT] = len(self.get_units(Terran.SCV)) / 50
         obs[ObservationIndex.REFINERY_COUNT] = len(self.get_units(Terran.Refinery)) / 4
         obs[ObservationIndex.IS_REFINERY_BUILDING] = float(any(
-            [refinery[UnitLayer.build_progress < 100] for refinery in self.get_units(Terran.Refinery)]
+            [refinery[FeatureUnit.build_progress] < 100 for refinery in self.get_units(Terran.Refinery)]
         ))
         return obs
 
