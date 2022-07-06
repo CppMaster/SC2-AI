@@ -4,12 +4,13 @@ import numpy as np
 from stable_baselines3.common.monitor import Monitor
 
 from minigames.collect_minerals_and_gas.src.env import CollectMineralAndGasEnv
+from minigames.collect_minerals_and_gas.src.env_dicrete import CollectMineralAndGasDiscreteEnv
 
 FLAGS = flags.FLAGS
 FLAGS(sys.argv)
 
 
-env = CollectMineralAndGasEnv(step_mul=4, realtime=False)
+env = CollectMineralAndGasDiscreteEnv(step_mul=32, realtime=False)
 monitor_env = Monitor(env)
 while True:
     done = False

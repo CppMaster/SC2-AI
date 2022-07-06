@@ -44,7 +44,7 @@ class CollectMineralAndGasEnv(gym.Env):
     supply_depot_locations = np.array([[29, 31], [29, 42], [31, 31], [31, 42], [33, 31], [33, 42], [35, 31], [35, 42]])
     cc_location = np.array([35, 36])
 
-    def __init__(self, step_mul: int = 8, realtime: bool = False, resolution: int = 32, random_order=False):
+    def __init__(self, step_mul: int = 8, realtime: bool = False, random_order=False):
         self.settings = {
             'map_name': "CollectMineralsAndGas",
             'players': [sc2_env.Agent(sc2_env.Race.terran)],
@@ -56,7 +56,6 @@ class CollectMineralAndGasEnv(gym.Env):
             'realtime': realtime,
             'step_mul': step_mul
         }
-        self.resolution = resolution
         self.action_space = MultiDiscrete([2] * len(ActionIndex))
         self.observation_space = Box(low=0.0, high=1.0, shape=(len(ObservationIndex), ))
         self.env: Optional[SC2Env] = None
