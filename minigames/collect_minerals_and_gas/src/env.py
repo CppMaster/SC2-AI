@@ -1,6 +1,6 @@
 import random
 from enum import IntEnum
-from typing import Optional, List
+from typing import Optional, List, Set, Dict, Tuple, Any
 
 import gym
 from gym.spaces import Box, MultiDiscrete
@@ -23,14 +23,15 @@ class ActionIndex(IntEnum):
 
 
 class ObservationIndex(IntEnum):
-    MINERALS = 0    # scale 500
-    SUPPLY_TAKEN = 1    # scale 50
-    SUPPLY_ALL = 2      # scale 50
-    SUPPLY_FREE = 3     # scale 16
+    MINERALS = 0  # scale 500
+    SUPPLY_TAKEN = 1  # scale 50
+    SUPPLY_ALL = 2  # scale 50
+    SUPPLY_FREE = 3  # scale 16
     CC_BUILT = 4
-    SCV_COUNT = 5   # scale 50
+    SCV_COUNT = 5  # scale 50
     REFINERY_COUNT = 6  # scale 4
     IS_REFINERY_BUILDING = 7
+    TIME_LEFT = 8
 
 
 class OrderId(IntEnum):
@@ -39,10 +40,13 @@ class OrderId(IntEnum):
 
 
 class CollectMineralAndGasEnv(gym.Env):
-
     metadata = {'render.modes': ['human']}
     supply_depot_locations = np.array([[29, 31], [29, 42], [31, 31], [31, 42], [33, 31], [33, 42], [35, 31], [35, 42]])
     cc_location = np.array([35, 36])
+    max_game_step = 6720
+    cc_optimal_workers = 16
+    cc_max_workers = 24
+    refinery_max_workers = 3
 
     def __init__(self, step_mul: int = 8, realtime: bool = False, random_order=False):
         self.settings = {
@@ -57,7 +61,7 @@ class CollectMineralAndGasEnv(gym.Env):
             'step_mul': step_mul
         }
         self.action_space = MultiDiscrete([2] * len(ActionIndex))
-        self.observation_space = Box(low=0.0, high=1.0, shape=(len(ObservationIndex), ))
+        self.observation_space = Box(low=0.0, high=1.0, shape=(len(ObservationIndex),))
         self.env: Optional[SC2Env] = None
         self.logger = logging.getLogger("CollectMineralsAndGas")
         self.raw_obs = None
@@ -75,7 +79,7 @@ class CollectMineralAndGasEnv(gym.Env):
         return derived_obs, self.raw_obs.reward, self.raw_obs.last(), {}
 
     def get_actions(self, action: np.ndarray) -> List:
-        mapped_actions = self.send_idle_workers_to_minerals()
+        mapped_actions = self.send_idle_workers_to_work()
         if action[ActionIndex.BUILD_SCV_1]:
             mapped_actions.append(self.build_scv(0))
         if action[ActionIndex.BUILD_SCV_2]:
@@ -86,10 +90,7 @@ class CollectMineralAndGasEnv(gym.Env):
             mapped_actions.append(self.build_cc())
         if action[ActionIndex.BUILD_REFINERY]:
             mapped_actions.append(self.build_refinery())
-        '''
-        TODO:
-        -Action for reassigning workers to opposite minerals or refinery
-        '''
+
         mapped_actions = list(filter(lambda x: x is not None, mapped_actions))
         if self.random_order:
             random.shuffle(mapped_actions)
@@ -111,18 +112,41 @@ class CollectMineralAndGasEnv(gym.Env):
             return actions.RAW_FUNCTIONS.Train_SCV_quick("now", ccs[ccidx].tag)
         return None
 
-    def send_idle_workers_to_minerals(self) -> List:
+    def send_idle_workers_to_work(self) -> List:
         idle_scvs = list(filter(lambda u: u[FeatureUnit.order_length] == 0, self.get_units(Terran.SCV)))
-        minerals = self.get_units(Neutral.MineralField)
-        mineral_positions = np.array([[mineral[FeatureUnit.x], mineral[FeatureUnit.y]] for mineral in minerals])
+        working_targets = self.get_working_targets(len(idle_scvs))
         orders = []
-        for idle_scv in idle_scvs:
-            scv_position = np.array([idle_scv[FeatureUnit.x], idle_scv[FeatureUnit.y]])
-            mineral_idx = np.sum(np.power(mineral_positions - scv_position, 2), axis=1).argmin()
+        for s_i, idle_scv in enumerate(idle_scvs):
             orders.append(actions.RAW_FUNCTIONS.Harvest_Gather_unit(
-                "now", idle_scv[FeatureUnit.tag], minerals[mineral_idx][FeatureUnit.tag]
+                "now", idle_scv[FeatureUnit.tag], working_targets[s_i][FeatureUnit.tag]
             ))
         return orders
+
+    def get_working_targets(self, n_idle_workers: int) -> List:
+        minerals = self.get_units(Neutral.MineralField)
+        refineries = list(filter(lambda r: r[FeatureUnit.build_progress] == 100, self.get_units(Terran.Refinery)))
+        left_minerals = list(filter(lambda m: m[FeatureUnit.x] <= 32, minerals))
+        right_minerals = list(filter(lambda m: m[FeatureUnit.x] > 32, minerals))
+        ccs = sorted(list(
+            filter(lambda c: c[FeatureUnit.build_progress] == 100, self.get_units(Terran.CommandCenter))
+        ), key=lambda c: c[FeatureUnit.x])
+        cc_allocations = [c[FeatureUnit.assigned_harvesters] for c in ccs]
+        refinery_allocations = [r[FeatureUnit.assigned_harvesters] for r in refineries]
+        worker_targets: List = []
+        for w_i in range(n_idle_workers):
+            for c_i in range(len(ccs)):
+                if cc_allocations[c_i] < self.cc_optimal_workers:
+                    cc_allocations[c_i] += 1
+                    worker_targets.append(random.choice(left_minerals if c_i == 0 else right_minerals))
+                    break
+            for r_i in range(len(refineries)):
+                if refinery_allocations[r_i] < self.refinery_max_workers:
+                    refinery_allocations[r_i] += 1
+                    worker_targets.append(refineries[r_i])
+                    break
+            less_allocated_cc_index = np.argmin(cc_allocations)
+            worker_targets.append(random.choice(left_minerals if less_allocated_cc_index == 0 else right_minerals))
+        return worker_targets
 
     def build_supply_depot(self):
         if self.raw_obs.observation.player[Player.minerals] < 100:
@@ -200,6 +224,7 @@ class CollectMineralAndGasEnv(gym.Env):
         obs[ObservationIndex.IS_REFINERY_BUILDING] = float(any(
             [refinery[FeatureUnit.build_progress] < 100 for refinery in self.get_units(Terran.Refinery)]
         ))
+        obs[ObservationIndex.TIME_LEFT] = (self.max_game_step - self.raw_obs.observation.game_loop) / self.max_game_step
         return obs
 
     def get_units(self, unit_type: int):
@@ -212,3 +237,24 @@ class CollectMineralAndGasEnv(gym.Env):
         if self.env is not None:
             self.env.close()
         super().close()
+
+    def get_invalid_actions(self) -> Set[int]:
+        return {index for index, valid in self.get_action_to_valid().items() if not valid}
+
+    def is_2nd_cc_built(self) -> bool:
+        ccs = sorted(self.get_units(Terran.CommandCenter), key=lambda c: c[FeatureUnit.x])
+        return len(ccs) == 2 and ccs[1][FeatureUnit.build_progress] == 100
+
+    def get_action_to_valid(self) -> Dict[int, bool]:
+        player = self.raw_obs.observation.player
+        food_free = player[Player.food_cap] - player[Player.food_used]
+        second_cc_build = self.is_2nd_cc_built()
+        place_to_supply_depot = self.supply_depot_index < len(self.supply_depot_locations)
+        return {
+            ActionIndex.BUILD_SCV_1: player.minerals >= 50 and food_free >= 1,
+            ActionIndex.BUILD_SCV_2: player.minerals >= 50 and food_free >= 1 and second_cc_build,
+            ActionIndex.BUILD_CC:  player.minerals >= 400 and not self.cc_started,
+            ActionIndex.BUILD_SUPPLY: player.minerals >= 100 and place_to_supply_depot,
+            ActionIndex.BUILD_REFINERY: player.minerals >= 75 and self.refinery_index < 4,
+            len(ActionIndex): True
+        }

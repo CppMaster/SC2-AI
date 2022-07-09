@@ -12,7 +12,7 @@ class CollectMineralAndGasDiscreteEnv(CollectMineralAndGasEnv):
         self.action_space = Discrete(len(ActionIndex) + 1)
 
     def get_actions(self, action: int) -> List:
-        mapped_actions = self.send_idle_workers_to_minerals()
+        mapped_actions = self.send_idle_workers_to_work()
         if action == ActionIndex.BUILD_SCV_1:
             mapped_actions.append(self.build_scv(0))
         elif action == ActionIndex.BUILD_SCV_2:
