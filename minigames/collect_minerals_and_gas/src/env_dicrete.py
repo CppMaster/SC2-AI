@@ -1,5 +1,6 @@
 from typing import List
 
+import numpy as np
 from gym.spaces import Discrete
 
 from minigames.collect_minerals_and_gas.src.env import CollectMineralAndGasEnv, ActionIndex
@@ -29,3 +30,9 @@ class CollectMineralAndGasDiscreteEnv(CollectMineralAndGasEnv):
         '''
         mapped_actions = list(filter(lambda x: x is not None, mapped_actions))
         return mapped_actions
+
+    def action_masks(self) -> np.ndarray:
+        mask = [True] * self.action_space.n
+        for action, valid in self.get_action_to_valid().items():
+            mask[action] = valid
+        return np.array(mask)

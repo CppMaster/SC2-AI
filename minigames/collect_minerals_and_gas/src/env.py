@@ -32,6 +32,8 @@ class ObservationIndex(IntEnum):
     REFINERY_COUNT = 6  # scale 4
     IS_REFINERY_BUILDING = 7
     TIME_LEFT = 8
+    SUPPLY_DEPOT_COUNT = 9
+    IS_SUPPLY_DEPOT_BUILDING = 10
 
 
 class OrderId(IntEnum):
@@ -218,13 +220,17 @@ class CollectMineralAndGasEnv(gym.Env):
         obs[ObservationIndex.SUPPLY_TAKEN] = player[Player.food_used] / 50
         obs[ObservationIndex.SUPPLY_ALL] = player[Player.food_cap] / 50
         obs[ObservationIndex.SUPPLY_FREE] = (player[Player.food_cap] - player[Player.food_used]) / 16
-        obs[ObservationIndex.CC_BUILT] = float(len(self.get_units(Terran.CommandCenter)) > 1)
+        obs[ObservationIndex.CC_BUILT] = float(self.cc_started)
         obs[ObservationIndex.SCV_COUNT] = len(self.get_units(Terran.SCV)) / 50
-        obs[ObservationIndex.REFINERY_COUNT] = len(self.get_units(Terran.Refinery)) / 4
-        obs[ObservationIndex.IS_REFINERY_BUILDING] = float(any(
+        obs[ObservationIndex.REFINERY_COUNT] = self.refinery_index / 4
+        obs[ObservationIndex.IS_REFINERY_BUILDING] = float(sum(
             [refinery[FeatureUnit.build_progress] < 100 for refinery in self.get_units(Terran.Refinery)]
         ))
         obs[ObservationIndex.TIME_LEFT] = (self.max_game_step - self.raw_obs.observation.game_loop) / self.max_game_step
+        obs[ObservationIndex.SUPPLY_DEPOT_COUNT] = self.supply_depot_index / 8
+        obs[ObservationIndex.IS_SUPPLY_DEPOT_BUILDING] = float(sum(
+            [supply_depot[FeatureUnit.build_progress] < 100 for supply_depot in self.get_units(Terran.SupplyDepot)]
+        ))
         return obs
 
     def get_units(self, unit_type: int):
