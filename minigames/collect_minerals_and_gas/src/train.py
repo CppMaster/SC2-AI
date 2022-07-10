@@ -17,12 +17,12 @@ FLAGS(sys.argv)
 
 logging.basicConfig(encoding='utf-8', level=logging.INFO)
 
-suffix = "reward_scale"
+suffix = "reward_scale-005"
 
 env = CollectMineralAndGasDiscreteEnv(step_mul=8, realtime=False)
 # env = CollectMineralAndGasEnv(step_mul=4, realtime=False)
 env = Monitor(env)
-env = RewardScaleWrapper(env, 0.2)
+env = RewardScaleWrapper(env, 0.05)
 
 eval_path = f"minigames/collect_minerals_and_gas/eval_logs_{suffix}"
 stop_callback = StopTrainingOnNoModelImprovement(max_no_improvement_evals=60, min_evals=100, verbose=1)

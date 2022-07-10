@@ -10,19 +10,20 @@ from absl import flags
 from optuna.pruners import MedianPruner
 from optuna.samplers import TPESampler
 from optuna.visualization import plot_optimization_history, plot_param_importances, plot_parallel_coordinate
-from stable_baselines3 import PPO
+from sb3_contrib import MaskablePPO
 from stable_baselines3.common.callbacks import StopTrainingOnNoModelImprovement
 from stable_baselines3.common.monitor import Monitor
 
-from minigames.move_to_beacon.src.env import MoveToBeaconEnv
+from minigames.collect_minerals_and_gas.src.env_dicrete import CollectMineralAndGasDiscreteEnv
 from optuna_utils.sample_params.ppo import sample_ppo_params
 from optuna_utils.trial_eval_callback import TrialEvalCallback
+from wrappers.reward_scale_wrapper import RewardScaleWrapper
 
 FLAGS = flags.FLAGS
 FLAGS(sys.argv)
 
 
-study_path = "minigames/move_to_beacon/optuna/4"
+study_path = "minigames/collect_minerals_and_gas/optuna/0"
 
 
 def objective(trial: optuna.Trial) -> float:
@@ -37,11 +38,12 @@ def objective(trial: optuna.Trial) -> float:
     path = f"{study_path}/trial_{str(trial.number)}"
     os.makedirs(path, exist_ok=True)
 
-    env = MoveToBeaconEnv(**env_kwargs)
+    env = CollectMineralAndGasDiscreteEnv(**env_kwargs)
     env = Monitor(env)
-    model = PPO("MlpPolicy", env=env, seed=None, verbose=0, tensorboard_log=path, **sampled_hyperparams)
+    env = RewardScaleWrapper(env, 0.05)
+    model = MaskablePPO("MlpPolicy", env=env, seed=None, verbose=0, tensorboard_log=path, **sampled_hyperparams)
 
-    stop_callback = StopTrainingOnNoModelImprovement(max_no_improvement_evals=30, min_evals=50, verbose=1)
+    stop_callback = StopTrainingOnNoModelImprovement(max_no_improvement_evals=100, min_evals=300, verbose=1)
     eval_callback = TrialEvalCallback(
         env, trial, best_model_save_path=path, log_path=path,
         n_eval_episodes=5, eval_freq=10000, deterministic=False, callback_after_eval=stop_callback
@@ -77,7 +79,7 @@ def objective(trial: optuna.Trial) -> float:
 if __name__ == "__main__":
 
     sampler = TPESampler(n_startup_trials=10, multivariate=True)
-    pruner = MedianPruner(n_startup_trials=10, n_warmup_steps=10)
+    pruner = MedianPruner(n_startup_trials=10, n_warmup_steps=300)
 
     study = optuna.create_study(
         sampler=sampler,
@@ -93,12 +95,12 @@ if __name__ == "__main__":
 
     print("Number of finished trials: ", len(study.trials))
 
-    trial = study.best_trial
-    print(f"Best trial: {trial.number}")
-    print("Value: ", trial.value)
+    best_trial = study.best_trial
+    print(f"Best trial: {best_trial.number}")
+    print("Value: ", best_trial.value)
 
     print("Params: ")
-    for key, value in trial.params.items():
+    for key, value in best_trial.params.items():
         print(f"    {key}: {value}")
 
     study.trials_dataframe().to_csv(f"{study_path}/report.csv")
