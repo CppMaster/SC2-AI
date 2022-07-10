@@ -40,7 +40,7 @@ def objective(trial: optuna.Trial) -> float:
 
     env = CollectMineralAndGasDiscreteEnv(**env_kwargs)
     env = Monitor(env)
-    env = RewardScaleWrapper(env, 0.05)
+    env = RewardScaleWrapper(env, 0.2)
     model = MaskablePPO("MlpPolicy", env=env, seed=None, verbose=0, tensorboard_log=path, **sampled_hyperparams)
 
     stop_callback = StopTrainingOnNoModelImprovement(max_no_improvement_evals=100, min_evals=300, verbose=1)
