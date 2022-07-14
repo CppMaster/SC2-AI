@@ -259,8 +259,26 @@ class CollectMineralAndGasEnv(gym.Env):
         return {
             ActionIndex.BUILD_SCV_1: player.minerals >= 50 and food_free >= 1,
             ActionIndex.BUILD_SCV_2: player.minerals >= 50 and food_free >= 1 and second_cc_build,
-            ActionIndex.BUILD_CC:  player.minerals >= 400 and not self.cc_started,
+            ActionIndex.BUILD_CC: player.minerals >= 400 and not self.cc_started,
             ActionIndex.BUILD_SUPPLY: player.minerals >= 100 and place_to_supply_depot,
             ActionIndex.BUILD_REFINERY: player.minerals >= 75 and self.refinery_index < 4,
             len(ActionIndex): True
         }
+
+    def get_mineral_workers(self) -> int:
+        return sum([
+            min(cc[FeatureUnit.assigned_harvesters], self.cc_optimal_workers)
+            for cc in self.get_units(Terran.CommandCenter)
+        ])
+
+    def get_lesser_mineral_workers(self) -> int:
+        return sum([
+            max(min(cc[FeatureUnit.assigned_harvesters], self.cc_max_workers) - self.cc_optimal_workers, 0)
+            for cc in self.get_units(Terran.CommandCenter)
+        ])
+
+    def get_gas_workers(self) -> int:
+        return sum([
+            min(r[FeatureUnit.assigned_harvesters], self.refinery_max_workers)
+            for r in self.get_units(Terran.Refinery)
+        ])

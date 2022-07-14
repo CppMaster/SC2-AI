@@ -32,6 +32,7 @@ def objective(trial: optuna.Trial) -> float:
 
     step_mul = trial.suggest_categorical("step_mul", [4, 8, 16, 32, 64])
     env_kwargs = {"step_mul": step_mul}
+    reward_scale = trial.suggest_categorical("reward_scale", [0.5, 1.0, 2.0])
 
     sampled_hyperparams = sample_ppo_params(trial)
 
@@ -40,7 +41,7 @@ def objective(trial: optuna.Trial) -> float:
 
     env = CollectMineralAndGasDiscreteEnv(**env_kwargs)
     env = Monitor(env)
-    env = RewardScaleWrapper(env, 0.2)
+    env = RewardScaleWrapper(env, reward_scale)
     model = MaskablePPO("MlpPolicy", env=env, seed=None, verbose=0, tensorboard_log=path, **sampled_hyperparams)
 
     stop_callback = StopTrainingOnNoModelImprovement(max_no_improvement_evals=100, min_evals=300, verbose=1)
@@ -49,8 +50,8 @@ def objective(trial: optuna.Trial) -> float:
         n_eval_episodes=5, eval_freq=10000, deterministic=False, callback_after_eval=stop_callback
     )
 
-    params = env_kwargs | sampled_hyperparams
-    with open(f"{path}/params.txt", "w") as f:
+    params = env_kwargs | sampled_hyperparams | {"reward_scale": reward_scale}
+    with open(f"{path}/params.json", "w") as f:
         f.write(str(params))
 
     try:
