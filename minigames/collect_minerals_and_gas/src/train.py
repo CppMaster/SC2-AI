@@ -8,6 +8,7 @@ from stable_baselines3 import PPO, DQN
 from stable_baselines3.common.monitor import Monitor
 from torch import nn
 
+from minigames.collect_minerals_and_gas.src.command_center_reward_wrapper import CommandCenterRewardWrapper
 from minigames.collect_minerals_and_gas.src.env import CollectMineralAndGasEnv
 from minigames.collect_minerals_and_gas.src.env_dicrete import CollectMineralAndGasDiscreteEnv
 from minigames.collect_minerals_and_gas.src.supply_depot_reward_wrapper import SupplyDepotRewardWrapper
@@ -20,13 +21,14 @@ FLAGS(sys.argv)
 
 logging.basicConfig(encoding='utf-8', level=logging.INFO)
 
-suffix = "reward-shaping_step-mul-4_start-pretrained"
+suffix = "trash"
 
 env = CollectMineralAndGasDiscreteEnv(step_mul=4, realtime=False)
 env = Monitor(env)
-env = WorkersActiveRewardWrapper(env)
-env = SupplyTakenRewardWrapper(env)
-env = SupplyDepotRewardWrapper(env)
+env = WorkersActiveRewardWrapper(env, mineral_reward=100., lesser_mineral_reward=50., gas_reward=75.)
+env = SupplyTakenRewardWrapper(env, reward_diff=100.)
+env = SupplyDepotRewardWrapper(env, reward_diff=100., free_supply_margin=6)
+env = CommandCenterRewardWrapper(env, reward_diff=10.)
 # env = RewardScaleWrapper(env, 0.1)
 
 eval_path = f"minigames/collect_minerals_and_gas/results/eval/eval_logs_{suffix}"
@@ -35,12 +37,12 @@ eval_callback = EvalCallback(env, best_model_save_path=eval_path, log_path=eval_
                              eval_freq=10000, deterministic=False, render=False,
                              callback_after_eval=stop_callback)
 
-# model = MaskablePPO(
-#     "MlpPolicy", env, verbose=1,
-#     tensorboard_log=f"minigames/collect_minerals_and_gas/results/logs/logs_{suffix}",
-#     gamma=0.99, policy_kwargs=dict(activation_fn=nn.LeakyReLU, ortho_init=True),
-#     batch_size=64, learning_rate=3e-4, normalize_advantage=True
-# )
-model = MaskablePPO.load("minigames/collect_minerals_and_gas/results/eval/eval_logs_reward-wrappers-workers-supply-taken-supply-depot/best_model.zip",
-                         env=env)
+model = MaskablePPO(
+    "MlpPolicy", env, verbose=1,
+    tensorboard_log=f"minigames/collect_minerals_and_gas/results/logs/logs_{suffix}",
+    gamma=0.99, policy_kwargs=dict(activation_fn=nn.LeakyReLU, ortho_init=True),
+    batch_size=64, learning_rate=3e-4, normalize_advantage=True
+)
+# model = MaskablePPO.load("minigames/collect_minerals_and_gas/results/eval/eval_logs_reward-wrappers-workers-supply-taken-supply-depot/best_model.zip",
+#                          env=env)
 model.learn(10000000, callback=eval_callback, reset_num_timesteps=True)

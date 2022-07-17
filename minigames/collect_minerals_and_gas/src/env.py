@@ -291,3 +291,6 @@ class CollectMineralAndGasEnv(gym.Env):
         return sum(
             [supply_depot[FeatureUnit.build_progress] < 100 for supply_depot in self.get_units(Terran.SupplyDepot)]
         )
+
+    def get_game_step(self) -> int:
+        return self.raw_obs.observation.game_loop
