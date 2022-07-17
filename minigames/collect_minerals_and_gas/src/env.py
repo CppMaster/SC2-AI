@@ -228,9 +228,7 @@ class CollectMineralAndGasEnv(gym.Env):
         ))
         obs[ObservationIndex.TIME_LEFT] = (self.max_game_step - self.raw_obs.observation.game_loop) / self.max_game_step
         obs[ObservationIndex.SUPPLY_DEPOT_COUNT] = self.supply_depot_index / 8
-        obs[ObservationIndex.IS_SUPPLY_DEPOT_BUILDING] = float(sum(
-            [supply_depot[FeatureUnit.build_progress] < 100 for supply_depot in self.get_units(Terran.SupplyDepot)]
-        ))
+        obs[ObservationIndex.IS_SUPPLY_DEPOT_BUILDING] = self.get_supply_depots_in_progress()
         return obs
 
     def get_units(self, unit_type: int):
@@ -282,3 +280,14 @@ class CollectMineralAndGasEnv(gym.Env):
             min(r[FeatureUnit.assigned_harvesters], self.refinery_max_workers)
             for r in self.get_units(Terran.Refinery)
         ])
+
+    def get_supply_taken(self) -> int:
+        return self.raw_obs.observation.player[Player.food_used]
+
+    def get_supply_cap(self) -> int:
+        return self.raw_obs.observation.player[Player.food_cap]
+
+    def get_supply_depots_in_progress(self) -> int:
+        return sum(
+            [supply_depot[FeatureUnit.build_progress] < 100 for supply_depot in self.get_units(Terran.SupplyDepot)]
+        )
