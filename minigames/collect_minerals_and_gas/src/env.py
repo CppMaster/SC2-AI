@@ -281,6 +281,29 @@ class CollectMineralAndGasEnv(gym.Env):
             for r in self.get_units(Terran.Refinery)
         ])
 
+    def get_worker_slots(self) -> Tuple[int, int]:
+        """
+        Returns
+        -------
+            (x, y) - x is optimal worker slots, y is suboptimal worker slots
+        """
+        worker_slots = 0
+        suboptimal_worker_slots = 0
+
+        for cc in self.get_units(Terran.CommandCenter):
+            assigned = cc[FeatureUnit.assigned_harvesters]
+            if assigned < self.cc_optimal_workers:
+                worker_slots += self.cc_optimal_workers - assigned
+                suboptimal_worker_slots += self.cc_max_workers - self.cc_optimal_workers
+            elif assigned < self.cc_max_workers:
+                suboptimal_worker_slots += self.cc_max_workers - assigned
+
+        for r in self.get_units(Terran.Refinery):
+            assigned = r[FeatureUnit.assigned_harvesters]
+            worker_slots += self.refinery_max_workers - assigned
+
+        return worker_slots, suboptimal_worker_slots
+
     def get_supply_taken(self) -> int:
         return self.raw_obs.observation.player[Player.food_used]
 
