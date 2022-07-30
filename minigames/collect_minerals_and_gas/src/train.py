@@ -36,11 +36,11 @@ env = RefineryRewardWrapper(env, reward_diff=100., workers_slots_margin=4, subop
 env = RewardScaleWrapper(env, 0.1)
 
 eval_path = f"minigames/collect_minerals_and_gas/results/eval/eval_logs_{suffix}"
-# stop_callback = StopTrainingOnNoModelImprovement(max_no_improvement_evals=10, min_evals=10, verbose=1)
-# eval_callback = MaskableEvalCallback(
-#     env, best_model_save_path=eval_path, log_path=eval_path, eval_freq=100000, deterministic=False, render=False,
-#     callback_after_eval=stop_callback, n_eval_episodes=20
-# )
+stop_callback = StopTrainingOnNoModelImprovement(max_no_improvement_evals=10, min_evals=10, verbose=1)
+eval_callback = MaskableEvalCallback(
+    env, best_model_save_path=eval_path, log_path=eval_path, eval_freq=100000, deterministic=False, render=False,
+    callback_after_eval=stop_callback, n_eval_episodes=20
+)
 callback = StopTrainingOnNoModelTrainingImprovement(max_no_improvement_evals=10, eval_every_n_step=10000, verbose=1,
                                                     min_evals=10)
 

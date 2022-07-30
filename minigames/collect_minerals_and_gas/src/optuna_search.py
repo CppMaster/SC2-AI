@@ -13,7 +13,9 @@ from optuna.visualization import plot_optimization_history, plot_param_importanc
 from sb3_contrib import MaskablePPO
 from stable_baselines3.common.callbacks import StopTrainingOnNoModelImprovement
 from stable_baselines3.common.monitor import Monitor
+from torch import nn
 
+from callbacks.stop_training_on_no_model_training_improvement_trial import StopTrainingOnNoModelTrainingImprovementTrial
 from minigames.collect_minerals_and_gas.src.command_center_reward_wrapper import CommandCenterRewardWrapper
 from minigames.collect_minerals_and_gas.src.env_dicrete import CollectMineralAndGasDiscreteEnv
 from minigames.collect_minerals_and_gas.src.refinery_reward_wrapper import RefineryRewardWrapper
@@ -28,12 +30,10 @@ from wrappers.reward_scale_wrapper import RewardScaleWrapper
 FLAGS = flags.FLAGS
 FLAGS(sys.argv)
 
-
-study_path = "minigames/collect_minerals_and_gas/results/optuna/2"
+study_path = "minigames/collect_minerals_and_gas/results/optuna/4"
 
 
 def objective(trial: optuna.Trial) -> float:
-
     time.sleep(random.random() * 16)
 
     step_mul = trial.suggest_categorical("step_mul", [2, 4, 8, 16, 32, 64])
@@ -62,6 +62,7 @@ def objective(trial: optuna.Trial) -> float:
     }
 
     sampled_hyperparams = sample_ppo_params(trial)
+    # sampled_hyperparams = dict(policy_kwargs=dict(activation_fn=nn.LeakyReLU, ortho_init=True))
 
     path = f"{study_path}/trial_{str(trial.number)}"
     os.makedirs(path, exist_ok=True)
@@ -70,28 +71,31 @@ def objective(trial: optuna.Trial) -> float:
     env = Monitor(env)
     env = WorkersActiveRewardWrapper(
         env,
-        mineral_reward=100.*worker_active_reward_scale,
-        lesser_mineral_reward=50.*worker_active_reward_scale,
-        gas_reward=75.*worker_active_reward_scale
+        mineral_reward=100. * worker_active_reward_scale,
+        lesser_mineral_reward=50. * worker_active_reward_scale,
+        gas_reward=75. * worker_active_reward_scale
     )
-    env = SupplyTakenRewardWrapper(env, reward_diff=100.*supply_taken_reward_scale)
+    env = SupplyTakenRewardWrapper(env, reward_diff=100. * supply_taken_reward_scale)
     env = SupplyDepotRewardWrapper(
-        env, reward_diff=100.*supply_depot_reward_scale, free_supply_margin=supply_free_margin
+        env, reward_diff=100. * supply_depot_reward_scale, free_supply_margin=supply_free_margin
     )
-    env = CommandCenterRewardWrapper(env, reward_diff=10.*cc_reward_scale, time_margin=cc_time_margin)
+    env = CommandCenterRewardWrapper(env, reward_diff=10. * cc_reward_scale, time_margin=cc_time_margin)
     env = RefineryRewardWrapper(
         env,
-        reward_diff=100.*refinery_reward_scale,
+        reward_diff=100. * refinery_reward_scale,
         workers_slots_margin=refinery_worker_slots_margin,
         suboptimal_worker_slot_weight=refinery_suboptimal_worker_slot_weight
     )
     env = RewardScaleWrapper(env, reward_scale)
     model = MaskablePPO("MlpPolicy", env=env, seed=None, verbose=0, tensorboard_log=path, **sampled_hyperparams)
 
-    stop_callback = StopTrainingOnNoModelImprovement(max_no_improvement_evals=3, min_evals=3, verbose=1)
-    eval_callback = MaskableTrialEvalCallback(
-        env, trial, best_model_save_path=path, log_path=path,
-        n_eval_episodes=10, eval_freq=50000, deterministic=False, callback_after_eval=stop_callback
+    # stop_callback = StopTrainingOnNoModelImprovement(max_no_improvement_evals=3, min_evals=3, verbose=1)
+    # eval_callback = MaskableTrialEvalCallback(
+    #     env, trial, best_model_save_path=path, log_path=path,
+    #     n_eval_episodes=10, eval_freq=10000, deterministic=False, callback_after_eval=stop_callback
+    # )
+    callback = StopTrainingOnNoModelTrainingImprovementTrial(
+        10, trial, eval_every_n_step=10000, verbose=0, min_evals=10,
     )
 
     params = env_kwargs | sampled_hyperparams | reward_params
@@ -99,7 +103,7 @@ def objective(trial: optuna.Trial) -> float:
         f.write(str(params))
 
     try:
-        model.learn(10000000, callback=eval_callback)
+        model.learn(10000000, callback=callback)
         env.close()
     except (AssertionError, ValueError) as e:
         env.close()
@@ -109,8 +113,8 @@ def objective(trial: optuna.Trial) -> float:
         pprint(params)
         raise optuna.exceptions.TrialPruned()
 
-    is_pruned = eval_callback.is_pruned
-    reward = eval_callback.best_mean_reward
+    is_pruned = callback.is_pruned
+    reward = callback.best_mean_reward
 
     model.save(f"{path}/last_model.zip")
 
@@ -126,7 +130,7 @@ def objective(trial: optuna.Trial) -> float:
 if __name__ == "__main__":
 
     sampler = TPESampler(n_startup_trials=5, multivariate=True)
-    pruner = MedianPruner(n_startup_trials=5, n_warmup_steps=3)
+    pruner = MedianPruner(n_startup_trials=5, n_warmup_steps=10)
 
     study = optuna.create_study(
         sampler=sampler,
@@ -134,9 +138,11 @@ if __name__ == "__main__":
         load_if_exists=True,
         direction="maximize",
     )
+    # with open(f"{study_path}/study.pkl", "rb+") as f:
+    #     study = pkl.load(f)
 
     try:
-        study.optimize(objective, n_jobs=4, n_trials=128)
+        study.optimize(objective, n_jobs=2, n_trials=128)
     except KeyboardInterrupt:
         pass
 
