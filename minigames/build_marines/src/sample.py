@@ -4,10 +4,8 @@ import numpy as np
 from sb3_contrib import MaskablePPO
 from stable_baselines3.common.monitor import Monitor
 
-from minigames.build_marines.build_marines_discrete_env import BuildMarinesDiscreteEnv
-from minigames.build_marines.build_marines_env import BuildMarinesEnv
-from minigames.collect_minerals_and_gas.src.env import CollectMineralAndGasEnv
-from minigames.collect_minerals_and_gas.src.env_dicrete import CollectMineralAndGasDiscreteEnv
+from minigames.build_marines.src.build_marines_discrete_env import BuildMarinesDiscreteEnv
+from minigames.build_marines.src.build_marines_env import BuildMarinesEnv
 
 FLAGS = flags.FLAGS
 FLAGS(sys.argv)

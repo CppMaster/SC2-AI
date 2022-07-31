@@ -85,8 +85,9 @@ class BuildMarinesEnv(gym.Env):
         self.env = sc2_env.SC2Env(**self.settings)
 
     def reset(self):
-        if self.env is None:
-            self.init_env()
+        if self.env is not None:
+            self.env.close()
+        self.init_env()
 
         self.supply_depot_index = 0
         self.barracks_index = 0

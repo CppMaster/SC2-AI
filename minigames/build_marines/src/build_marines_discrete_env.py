@@ -3,7 +3,7 @@ from typing import List
 import numpy as np
 from gym.spaces import Discrete
 
-from minigames.build_marines.build_marines_env import BuildMarinesEnv, ActionIndex
+from minigames.build_marines.src.build_marines_env import BuildMarinesEnv, ActionIndex
 
 
 class BuildMarinesDiscreteEnv(BuildMarinesEnv):
