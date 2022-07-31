@@ -24,23 +24,47 @@ FLAGS(sys.argv)
 
 logging.basicConfig(encoding='utf-8', level=logging.DEBUG)
 
-suffix = "good-reward_StopTrainingOnNoModelTrainingImprovement-test"
+suffix = "found-values_step-mul-1"
 
-env = CollectMineralAndGasDiscreteEnv(step_mul=8, realtime=False)
+found_reward_values = {
+    'reward_scale': 0.00443894294414247,
+    'worker_active_reward_scale': 0.5233561577446618,
+    'supply_taken_reward_scale': 1.9013889305546567,
+    'supply_depot_reward_scale': 1.1966878841334392,
+    'supply_free_margin': 7,
+    'cc_reward_scale': 0.4619790372759725,
+    'cc_time_margin': 267.80016059275977,
+    'refinery_reward_scale': 1.2306796817224745,
+    'refinery_worker_slots_margin': 5,
+    'refinery_suboptimal_worker_slot_weight': 0.2560175654282947
+}
+
+env = CollectMineralAndGasDiscreteEnv(step_mul=1, realtime=False)
+# env = CollectMineralAndGasEnv(step_mul=8, realtime=False)
 env = Monitor(env)
-env = WorkersActiveRewardWrapper(env, mineral_reward=100., lesser_mineral_reward=50., gas_reward=75.)
-env = SupplyTakenRewardWrapper(env, reward_diff=100.)
-env = SupplyDepotRewardWrapper(env, reward_diff=100., free_supply_margin=6)
-env = CommandCenterRewardWrapper(env, reward_diff=10.)
-env = RefineryRewardWrapper(env, reward_diff=100., workers_slots_margin=4, suboptimal_worker_slot_weight=0.)
-env = RewardScaleWrapper(env, 0.1)
+env = WorkersActiveRewardWrapper(env,
+                                 mineral_reward=100. * found_reward_values["worker_active_reward_scale"],
+                                 lesser_mineral_reward=50. * found_reward_values["worker_active_reward_scale"],
+                                 gas_reward=75. * found_reward_values["worker_active_reward_scale"])
+env = SupplyTakenRewardWrapper(env, reward_diff=100. * found_reward_values["supply_taken_reward_scale"])
+env = SupplyDepotRewardWrapper(env,
+                               reward_diff=100. * found_reward_values["supply_depot_reward_scale"],
+                               free_supply_margin=found_reward_values["supply_free_margin"])
+env = CommandCenterRewardWrapper(env,
+                                 reward_diff=10. * found_reward_values["cc_reward_scale"],
+                                 time_margin=found_reward_values["cc_time_margin"])
+env = RefineryRewardWrapper(env,
+                            reward_diff=100. * found_reward_values["refinery_reward_scale"],
+                            workers_slots_margin=found_reward_values["refinery_worker_slots_margin"],
+                            suboptimal_worker_slot_weight=found_reward_values["refinery_suboptimal_worker_slot_weight"])
+env = RewardScaleWrapper(env, found_reward_values["reward_scale"])
 
 eval_path = f"minigames/collect_minerals_and_gas/results/eval/eval_logs_{suffix}"
-stop_callback = StopTrainingOnNoModelImprovement(max_no_improvement_evals=10, min_evals=10, verbose=1)
-eval_callback = MaskableEvalCallback(
-    env, best_model_save_path=eval_path, log_path=eval_path, eval_freq=100000, deterministic=False, render=False,
-    callback_after_eval=stop_callback, n_eval_episodes=20
-)
+# stop_callback = StopTrainingOnNoModelImprovement(max_no_improvement_evals=10, min_evals=10, verbose=1)
+# eval_callback = MaskableEvalCallback(
+#     env, best_model_save_path=eval_path, log_path=eval_path, eval_freq=100000, deterministic=False, render=False,
+#     callback_after_eval=stop_callback, n_eval_episodes=20
+# )
 callback = StopTrainingOnNoModelTrainingImprovement(max_no_improvement_evals=10, eval_every_n_step=10000, verbose=1,
                                                     min_evals=10)
 
