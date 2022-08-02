@@ -16,10 +16,10 @@ from minigames.collect_minerals_and_gas.src.env import OrderId
 
 
 class ActionIndex(IntEnum):
-    BUILD_MARINE = 3
-    BUILD_SCV = 0
-    BUILD_SUPPLY = 1
-    BUILD_BARRACKS = 2
+    BUILD_MARINE = 0
+    BUILD_SCV = 1
+    BUILD_SUPPLY = 2
+    BUILD_BARRACKS = 3
 
 
 class ObservationIndex(IntEnum):
@@ -267,6 +267,15 @@ class BuildMarinesEnv(gym.Env):
         obs[ObservationIndex.SCV_IN_PROGRESS] = self.get_svc_in_progress()
         obs[ObservationIndex.MARINES_IN_PROGRESS] = self.get_marines_in_progress() / len(self.barracks_locations)
         return obs
+
+    def get_supply_taken(self) -> int:
+        return self.raw_obs.observation.player[Player.food_used]
+
+    def get_supply_cap(self) -> int:
+        return self.raw_obs.observation.player[Player.food_cap]
+
+    def get_expected_supply_cap(self) -> int:
+        return 15 + self.supply_depot_index * 8
 
     def get_supply_depots_in_progress(self) -> int:
         return sum(
