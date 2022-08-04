@@ -1,4 +1,5 @@
 import logging
+from collections import defaultdict
 from enum import IntEnum
 import random
 from typing import Optional, List, Set, Union
@@ -10,7 +11,7 @@ from pysc2.env import sc2_env
 from pysc2.env.sc2_env import SC2Env, Dimensions
 from pysc2.lib import features, actions
 from pysc2.lib.features import FeatureUnit, Player
-from pysc2.lib.units import Terran, Neutral
+from pysc2.lib.units import Terran, Neutral, Zerg
 
 from minigames.collect_minerals_and_gas.src.env import OrderId
 
@@ -46,12 +47,14 @@ class BuildMarinesEnv(gym.Env):
 
     metadata = {'render.modes': ['human']}
 
-    scv_limit = 50
     rally_position = np.array([20, 36])
     map_dimensions = (88, 96)
     base_locations = [(26, 25), None, None, (54, 68)]
+    targets_to_ignore = {Zerg.Changeling, Zerg.ChangelingMarine, Zerg.ChangelingMarineShield,
+                         Zerg.ChangelingZergling, Zerg.ChangelingZealot, Zerg.Larva, Zerg.Cocoon}
 
-    def __init__(self, step_mul: int = 8, realtime: bool = False, is_discrete: bool = True):
+    def __init__(self, step_mul: int = 8, realtime: bool = False, is_discrete: bool = True,
+                 supple_depot_limit: Optional[int] = None, scv_limit: Optional[int] = 25):
         self.settings = {
             'map_name': "Simple64",
             'players': [sc2_env.Agent(sc2_env.Race.terran), sc2_env.Bot(sc2_env.Race.zerg, sc2_env.Difficulty.easy)],
@@ -67,6 +70,8 @@ class BuildMarinesEnv(gym.Env):
         }
 
         self.is_discrete = is_discrete
+        self.supple_depot_limit = supple_depot_limit
+        self.scv_limit = scv_limit
         self.action_space: Union[Discrete, MultiDiscrete]
         if self.is_discrete:
             self.action_space = Discrete(len(ActionIndex) + 1)
@@ -137,12 +142,12 @@ class BuildMarinesEnv(gym.Env):
         if self.is_discrete:
             for action_index, action_func in self.action_mapping.items():
                 if action_index == action:
-                    mapped_actions.append(action_func())
+                    mapped_actions.extend(action_func())
                     break
         else:
             for action_index, action_func in self.action_mapping.items():
                 if action[action_index]:
-                    mapped_actions.append(action_func())
+                    mapped_actions.extend(action_func())
         return mapped_actions
 
     def send_idle_workers_to_work(self) -> List:
@@ -175,30 +180,33 @@ class BuildMarinesEnv(gym.Env):
 
         return True
 
-    def build_scv(self):
+    def build_scv(self) -> List:
         if self.can_build_scv():
-            return actions.RAW_FUNCTIONS.Train_SCV_quick("now", self.get_units(Terran.CommandCenter)[0].tag)
-        return None
+            return [actions.RAW_FUNCTIONS.Train_SCV_quick("now", self.get_units(Terran.CommandCenter)[0].tag)]
+        return []
 
     def can_build_supply_depot(self) -> bool:
         if self.raw_obs.observation.player[Player.minerals] < 100:
             return False
         if self.supply_depot_index >= len(self.supply_depot_locations):
             return False
+        if self.supple_depot_limit is not None and \
+                len(self.get_units({Terran.SupplyDepot, Terran.SupplyDepotLowered})) >= self.supple_depot_limit:
+            return False
         return True
 
-    def build_supply_depot(self):
+    def build_supply_depot(self) -> List:
         if not self.can_build_supply_depot():
-            return None
+            return []
 
         location = self.supply_depot_locations[self.supply_depot_index]
         worker = self.get_nearest_worker(location)
         if worker is None:
             self.logger.warning(f"Free worker not found")
-            return None
+            return []
 
         self.supply_depot_index += 1
-        return actions.RAW_FUNCTIONS.Build_SupplyDepot_pt("now", worker[FeatureUnit.tag], location)
+        return [actions.RAW_FUNCTIONS.Build_SupplyDepot_pt("now", worker[FeatureUnit.tag], location)]
 
     def can_build_barracks(self) -> bool:
         if self.raw_obs.observation.player[Player.minerals] < 150:
@@ -207,18 +215,18 @@ class BuildMarinesEnv(gym.Env):
             return False
         return True
 
-    def build_barracks(self):
+    def build_barracks(self) -> List:
         if not self.can_build_barracks():
-            return None
+            return []
 
         location = self.barracks_locations[self.barracks_index]
         worker = self.get_nearest_worker(location)
         if worker is None:
             self.logger.warning(f"Free worker not found")
-            return None
+            return []
 
         self.barracks_index += 1
-        return actions.RAW_FUNCTIONS.Build_Barracks_pt("now", worker[FeatureUnit.tag], location)
+        return [actions.RAW_FUNCTIONS.Build_Barracks_pt("now", worker[FeatureUnit.tag], location)]
 
     def get_free_barracks(self):
         barracks = self.get_units(Terran.Barracks)
@@ -240,16 +248,16 @@ class BuildMarinesEnv(gym.Env):
             return False
         return True
 
-    def build_marine(self):
+    def build_marine(self) -> List:
         if not self.can_build_marine():
-            return None
+            return []
 
         barracks = self.get_free_barracks()
         if barracks is None:
             self.logger.warning(f"Free barracks not found")
-            return
+            return []
 
-        return actions.RAW_FUNCTIONS.Train_Marine_quick("now", barracks.tag)
+        return [actions.RAW_FUNCTIONS.Train_Marine_quick("now", barracks.tag)]
 
     def get_random_mineral(self):
         minerals = self.get_units(Neutral.MineralField)
@@ -276,9 +284,18 @@ class BuildMarinesEnv(gym.Env):
         worker_positions = np.array([[worker[FeatureUnit.x], worker[FeatureUnit.y]] for worker in workers])
         return workers[np.sum(np.power(worker_positions - location, 2), axis=1).argmin()]
 
-    def get_units(self, unit_type: int, alliance: int = 1):
-        return [unit for unit in self.raw_obs.observation.raw_units
-                if unit.unit_type == unit_type and unit.alliance == alliance]
+    def get_units(self, unit_type: Optional[Union[int, Set[int]]] = None,
+                  alliance: Optional[Union[int, Set[int]]] = 1) -> List:
+        units = self.raw_obs.observation.raw_units
+        if unit_type is not None:
+            if isinstance(unit_type, int):
+                unit_type = {unit_type}
+            units = list(filter(lambda u: u.unit_type in unit_type, units))
+        if alliance is not None:
+            if isinstance(alliance, int):
+                alliance = {alliance}
+            units = list(filter(lambda u: u.alliance in alliance, units))
+        return units
 
     def get_derived_obs(self) -> np.ndarray:
         obs = np.zeros(shape=self.observation_space.shape)
@@ -361,12 +378,47 @@ class BuildMarinesEnv(gym.Env):
     def get_enemy_base_location(self) -> np.ndarray:
         return np.array(self.base_locations[-1] if self.player_on_left else self.base_locations[0])
 
-    def attack(self):
-        units = self.get_units(Terran.Marine)
+    def get_military_units(self) -> List:
+        return self.get_units({Terran.Marine})
+
+    def attack_enemy_base_location(self):
+        units = self.get_military_units()
         if len(units) == 0:
             return None
         tags = [u.tag for u in units]
+        self.logger.debug(f"Attack enemy base location: {self.enemy_base_location}")
         return actions.RAW_FUNCTIONS.Attack_pt("now", tags, self.enemy_base_location)
+
+    def attack_nearest_target(self) -> List:
+        targets = self.get_units(alliance=4)
+        targets = list(filter(lambda t: t.unit_type not in self.targets_to_ignore, targets))
+        if len(targets) == 0:
+            return []
+        units = self.get_military_units()
+        if len(units) == 0:
+            return []
+
+        unit_positions = np.array([[u.x, u.y] for u in units])
+        target_positions = np.array([[t.x, t.y] for t in targets])
+        distances = np.zeros(shape=(len(unit_positions), len(target_positions)))
+        for u_idx, u_pos in enumerate(unit_positions):
+            for t_idx, t_pos in enumerate(target_positions):
+                distances[u_idx, t_idx] = np.sum(np.power(u_pos - t_pos, 2))
+        unit_to_target_mapping = distances.argmin(axis=1)
+        target_to_units = defaultdict(set)
+        for u_idx, t_dx in enumerate(unit_to_target_mapping):
+            target_to_units[t_dx].add(u_idx)
+
+        attack_list = []
+        for t_dx, unit_indices in target_to_units.items():
+            target_location = np.array([targets[t_dx].x, targets[t_dx].y])
+            tags = [u.tag for u_idx, u in enumerate(units) if u_idx in unit_indices]
+            attack_list.append(actions.RAW_FUNCTIONS.Attack_pt("now", tags, target_location))
+            self.logger.debug(f"Attack nearest target: {target_location}, tags: {tags}")
+        return attack_list
+
+    def attack(self) -> List:
+        return self.attack_nearest_target() or [self.attack_enemy_base_location()]
 
     def lower_supply_depots(self):
         supply_depots = self.get_units(Terran.SupplyDepot)
@@ -394,3 +446,6 @@ class BuildMarinesEnv(gym.Env):
             return np.array(mask)
         else:
             raise NotImplementedError("Action mask not implemented for non-discrete action space")
+
+    def get_score(self) -> int:
+        return self.raw_obs.observation.score_cumulative.score
