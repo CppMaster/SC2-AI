@@ -12,7 +12,7 @@ FLAGS(sys.argv)
 
 
 # env = BuildMarinesEnv(step_mul=8, realtime=False)
-env = BuildMarinesDiscreteEnv(step_mul=4, realtime=False)
+env = BuildMarinesEnv(step_mul=4, realtime=False, is_discrete=True)
 monitor_env = Monitor(env)
 
 # model = MaskablePPO.load("minigames/collect_minerals_and_gas/results/eval/eval_logs_reward-wrappers-workers-supply-taken-supply-depot/best_model.zip",

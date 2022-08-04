@@ -1,11 +1,11 @@
 import logging
 from enum import IntEnum
 import random
-from typing import Optional, List, Set
+from typing import Optional, List, Set, Union
 
 import gym
 import numpy as np
-from gym.spaces import MultiDiscrete, Box
+from gym.spaces import MultiDiscrete, Box, Discrete
 from pysc2.env import sc2_env
 from pysc2.env.sc2_env import SC2Env, Dimensions
 from pysc2.lib import features, actions
@@ -48,7 +48,7 @@ class BuildMarinesEnv(gym.Env):
     scv_limit = 50
     rally_position = np.array([20, 36])
 
-    def __init__(self, step_mul: int = 8, realtime: bool = False):
+    def __init__(self, step_mul: int = 8, realtime: bool = False, is_discrete: bool = True):
         self.settings = {
             'map_name': "Simple64",
             'players': [sc2_env.Agent(sc2_env.Race.terran), sc2_env.Bot(sc2_env.Race.zerg, sc2_env.Difficulty.easy)],
@@ -62,7 +62,14 @@ class BuildMarinesEnv(gym.Env):
             'realtime': realtime,
             'step_mul': step_mul
         }
-        self.action_space = MultiDiscrete([2] * len(ActionIndex))
+
+        self.is_discrete = is_discrete
+        self.action_space: Union[Discrete, MultiDiscrete]
+        if self.is_discrete:
+            self.action_space = Discrete(len(ActionIndex) + 1)
+        else:
+            self.action_space = MultiDiscrete([2] * len(ActionIndex))
+
         self.observation_space = Box(low=0.0, high=1.0, shape=(len(ObservationIndex),))
         self.env: Optional[SC2Env] = None
         self.logger = logging.getLogger("BuildMarinesEnv")
@@ -74,6 +81,19 @@ class BuildMarinesEnv(gym.Env):
         self.player_on_left = False
         self.supply_depot_locations = np.zeros(shape=(0, 2))
         self.barracks_locations = np.zeros(shape=(0, 2))
+
+        self.action_mapping = {
+            ActionIndex.BUILD_MARINE: self.build_marine,
+            ActionIndex.BUILD_SCV: self.build_scv,
+            ActionIndex.BUILD_SUPPLY: self.build_supply_depot,
+            ActionIndex.BUILD_BARRACKS: self.build_barracks
+        }
+        self.valid_action_mapping = {
+            ActionIndex.BUILD_MARINE: self.can_build_marine,
+            ActionIndex.BUILD_SCV: self.can_build_scv,
+            ActionIndex.BUILD_SUPPLY: self.can_build_supply_depot,
+            ActionIndex.BUILD_BARRACKS: self.can_build_barracks
+        }
 
     def init_env(self):
         self.env = sc2_env.SC2Env(**self.settings)
@@ -98,19 +118,25 @@ class BuildMarinesEnv(gym.Env):
         derived_obs = self.get_derived_obs()
         return derived_obs, self.raw_obs.reward, self.raw_obs.last(), {}
 
-    def get_actions(self, action: np.ndarray) -> List:
+    def get_actions(self, action: Union[np.ndarray, int]) -> List:
         mapped_actions = self.send_idle_workers_to_work()
 
-        if action[ActionIndex.BUILD_MARINE]:
-            mapped_actions.append(self.build_marine())
-        if action[ActionIndex.BUILD_SCV]:
-            mapped_actions.append(self.build_scv())
-        if action[ActionIndex.BUILD_SUPPLY]:
-            mapped_actions.append(self.build_supply_depot())
-        if action[ActionIndex.BUILD_BARRACKS]:
-            mapped_actions.append(self.build_barracks())
+        mapped_actions.extend(self.process_actions(action))
 
         mapped_actions = list(filter(lambda x: x is not None, mapped_actions))
+        return mapped_actions
+
+    def process_actions(self, action: Union[np.ndarray, int]) -> List:
+        mapped_actions = []
+        if self.is_discrete:
+            for action_index, action_func in self.action_mapping.items():
+                if action_index == action:
+                    mapped_actions.append(action_func())
+                    break
+        else:
+            for action_index, action_func in self.action_mapping.items():
+                if action[action_index]:
+                    mapped_actions.append(action_func())
         return mapped_actions
 
     def send_idle_workers_to_work(self) -> List:
@@ -327,3 +353,14 @@ class BuildMarinesEnv(gym.Env):
         if self.env is not None:
             self.env.close()
         super().close()
+
+    def action_masks(self) -> np.ndarray:
+
+        if self.is_discrete:
+            self.action_space: Discrete
+            mask = [True] * self.action_space.n
+            for action_index, action_func in self.valid_action_mapping.items():
+                mask[action_index] = action_func()
+            return np.array(mask)
+        else:
+            raise NotImplementedError("Action mask not implemented for non-discrete action space")
