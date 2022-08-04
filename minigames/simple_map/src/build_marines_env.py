@@ -10,7 +10,7 @@ from pysc2.env import sc2_env
 from pysc2.env.sc2_env import SC2Env, Dimensions
 from pysc2.lib import features, actions
 from pysc2.lib.features import FeatureUnit, Player
-from pysc2.lib.units import Terran, Neutral, Zerg
+from pysc2.lib.units import Terran, Neutral
 
 from minigames.collect_minerals_and_gas.src.env import OrderId
 
@@ -49,6 +49,7 @@ class BuildMarinesEnv(gym.Env):
     scv_limit = 50
     rally_position = np.array([20, 36])
     map_dimensions = (88, 96)
+    base_locations = [(26, 25), None, None, (54, 68)]
 
     def __init__(self, step_mul: int = 8, realtime: bool = False, is_discrete: bool = True):
         self.settings = {
@@ -349,7 +350,7 @@ class BuildMarinesEnv(gym.Env):
     def get_barracks_locations(self) -> np.ndarray:
         cc = self.get_units(Terran.CommandCenter)[0]
         side_multiplier = (1 if self.player_on_left else -1)
-        start_position = (cc.x -1 * side_multiplier, cc.y + 2)
+        start_position = (cc.x - 1 * side_multiplier, cc.y + 2)
         positions = []
         for x in range(0, 16, 5):
             for y in range(-10, 6, 5):
@@ -358,8 +359,7 @@ class BuildMarinesEnv(gym.Env):
         return np.array(positions)
 
     def get_enemy_base_location(self) -> np.ndarray:
-        cc = self.get_units(Terran.CommandCenter)[0]
-        return np.array([self.map_dimensions[0] - cc.x, self.map_dimensions[1] - cc.y])
+        return np.array(self.base_locations[-1] if self.player_on_left else self.base_locations[0])
 
     def attack(self):
         units = self.get_units(Terran.Marine)
