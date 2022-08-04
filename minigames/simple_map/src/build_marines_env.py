@@ -10,7 +10,7 @@ from pysc2.env import sc2_env
 from pysc2.env.sc2_env import SC2Env, Dimensions
 from pysc2.lib import features, actions
 from pysc2.lib.features import FeatureUnit, Player
-from pysc2.lib.units import Terran, Neutral
+from pysc2.lib.units import Terran, Neutral, Zerg
 
 from minigames.collect_minerals_and_gas.src.env import OrderId
 
@@ -20,6 +20,7 @@ class ActionIndex(IntEnum):
     BUILD_SCV = 1
     BUILD_SUPPLY = 2
     BUILD_BARRACKS = 3
+    ATTACK = 4
 
 
 class ObservationIndex(IntEnum):
@@ -47,6 +48,7 @@ class BuildMarinesEnv(gym.Env):
 
     scv_limit = 50
     rally_position = np.array([20, 36])
+    map_dimensions = (88, 96)
 
     def __init__(self, step_mul: int = 8, realtime: bool = False, is_discrete: bool = True):
         self.settings = {
@@ -55,7 +57,7 @@ class BuildMarinesEnv(gym.Env):
             'agent_interface_format': features.AgentInterfaceFormat(
                 action_space=actions.ActionSpace.RAW,
                 use_raw_units=True,
-                feature_dimensions=Dimensions(screen=(88, 96), minimap=(88, 96)),
+                feature_dimensions=Dimensions(screen=self.map_dimensions, minimap=self.map_dimensions),
                 use_feature_units=True,
                 crop_to_playable_area=False
             ),
@@ -81,12 +83,14 @@ class BuildMarinesEnv(gym.Env):
         self.player_on_left = False
         self.supply_depot_locations = np.zeros(shape=(0, 2))
         self.barracks_locations = np.zeros(shape=(0, 2))
+        self.enemy_base_location = np.zeros(shape=(2, ))
 
         self.action_mapping = {
             ActionIndex.BUILD_MARINE: self.build_marine,
             ActionIndex.BUILD_SCV: self.build_scv,
             ActionIndex.BUILD_SUPPLY: self.build_supply_depot,
-            ActionIndex.BUILD_BARRACKS: self.build_barracks
+            ActionIndex.BUILD_BARRACKS: self.build_barracks,
+            ActionIndex.ATTACK: self.attack
         }
         self.valid_action_mapping = {
             ActionIndex.BUILD_MARINE: self.can_build_marine,
@@ -110,6 +114,7 @@ class BuildMarinesEnv(gym.Env):
         self.player_on_left = self.get_units(Terran.CommandCenter)[0].x < 32
         self.supply_depot_locations = self.get_supply_depot_locations()
         self.barracks_locations = self.get_barracks_locations()
+        self.enemy_base_location = self.get_enemy_base_location()
 
         return self.get_derived_obs()
 
@@ -351,6 +356,17 @@ class BuildMarinesEnv(gym.Env):
                 positions.append([start_position[0] + x * side_multiplier, start_position[1] + y])
         positions = sorted(positions, key=lambda p: (p[0] * side_multiplier, abs(p[1])))
         return np.array(positions)
+
+    def get_enemy_base_location(self) -> np.ndarray:
+        cc = self.get_units(Terran.CommandCenter)[0]
+        return np.array([self.map_dimensions[0] - cc.x, self.map_dimensions[1] - cc.y])
+
+    def attack(self):
+        units = self.get_units(Terran.Marine)
+        if len(units) == 0:
+            return None
+        tags = [u.tag for u in units]
+        return actions.RAW_FUNCTIONS.Attack_pt("now", tags, self.enemy_base_location)
 
     def render(self, mode="human"):
         pass
