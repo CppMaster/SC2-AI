@@ -159,8 +159,11 @@ class BuildMarinesEnv(gym.Env):
             return False
         if len(self.get_units(Terran.SCV)) >= self.scv_limit:
             return False
+        ccs = self.get_units(Terran.CommandCenter)
+        if len(ccs) == 0:
+            return False
 
-        cc = self.get_units(Terran.CommandCenter)[0]
+        cc = ccs[0]
         if cc[FeatureUnit.order_length] > 0:
             return False
 
@@ -312,7 +315,10 @@ class BuildMarinesEnv(gym.Env):
         )
 
     def get_svc_in_progress(self) -> bool:
-        return self.get_units(Terran.CommandCenter)[0][FeatureUnit.order_length] > 0
+        ccs = self.get_units(Terran.CommandCenter)
+        if len(ccs) == 0:
+            return False
+        return ccs[0][FeatureUnit.order_length] > 0
 
     def get_marines_in_progress(self) -> int:
         return sum(
