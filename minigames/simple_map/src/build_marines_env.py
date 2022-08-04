@@ -125,8 +125,8 @@ class BuildMarinesEnv(gym.Env):
 
     def get_actions(self, action: Union[np.ndarray, int]) -> List:
         mapped_actions = self.send_idle_workers_to_work()
-
         mapped_actions.extend(self.process_actions(action))
+        mapped_actions.append(self.lower_supply_depots())
 
         mapped_actions = list(filter(lambda x: x is not None, mapped_actions))
         return mapped_actions
@@ -367,6 +367,14 @@ class BuildMarinesEnv(gym.Env):
             return None
         tags = [u.tag for u in units]
         return actions.RAW_FUNCTIONS.Attack_pt("now", tags, self.enemy_base_location)
+
+    def lower_supply_depots(self):
+        supply_depots = self.get_units(Terran.SupplyDepot)
+        valid_supply_depots = list(filter(lambda s: s.build_progress == 100 and s.order_length == 0, supply_depots))
+        if len(valid_supply_depots) == 0:
+            return None
+        tags = [s.tag for s in valid_supply_depots]
+        return actions.RAW_FUNCTIONS.Morph_SupplyDepot_Lower_quick("now", tags)
 
     def render(self, mode="human"):
         pass
