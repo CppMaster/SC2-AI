@@ -2,7 +2,6 @@ import logging
 from typing import Optional
 
 import gym
-from pysc2.lib.units import Terran
 
 from minigames.simple_map.src.build_marines_env import BuildMarinesEnv
 from wrappers.utils import unwrap_wrapper_or_env

@@ -8,7 +8,7 @@ import gym
 import numpy as np
 from gym.spaces import MultiDiscrete, Box, Discrete
 from pysc2.env import sc2_env
-from pysc2.env.sc2_env import SC2Env, Dimensions
+from pysc2.env.sc2_env import SC2Env, Dimensions, Difficulty
 from pysc2.lib import features, actions
 from pysc2.lib.features import FeatureUnit, Player
 from pysc2.lib.units import Terran, Neutral, Zerg
@@ -22,6 +22,8 @@ class ActionIndex(IntEnum):
     BUILD_SUPPLY = 2
     BUILD_BARRACKS = 3
     ATTACK = 4
+    STOP_ARMY = 5
+    RETREAT = 6
 
 
 class ObservationIndex(IntEnum):
@@ -30,7 +32,7 @@ class ObservationIndex(IntEnum):
     SUPPLY_ALL = 2      # scale 200
     SUPPLY_FREE = 3     # scale 16
     SCV_COUNT = 4       # scale 50
-    TIME_STEP = 5       # scale 20000
+    TIME_STEP = 5       # scale 28800
     SUPPLY_DEPOT_COUNT = 6
     IS_SUPPLY_DEPOT_BUILDING = 7
     BARRACKS_COUNT = 8
@@ -61,11 +63,11 @@ class BuildMarinesEnv(gym.Env):
     mineral_optimal_workers = 2
 
     def __init__(self, step_mul: int = 8, realtime: bool = False, is_discrete: bool = True,
-                 supple_depot_limit: Optional[int] = None, scv_limit: Optional[int] = 25):
+                 supple_depot_limit: Optional[int] = None, scv_limit: Optional[int] = 25,
+                 difficulty: Difficulty = Difficulty.medium):
         self.settings = {
             'map_name': "Simple64",
-            'players': [sc2_env.Agent(sc2_env.Race.terran),
-                        sc2_env.Bot(sc2_env.Race.random, sc2_env.Difficulty.easy)],
+            'players': [sc2_env.Agent(sc2_env.Race.terran), sc2_env.Bot(sc2_env.Race.random, difficulty)],
             'agent_interface_format': features.AgentInterfaceFormat(
                 action_space=actions.ActionSpace.RAW,
                 use_raw_units=True,
@@ -106,13 +108,18 @@ class BuildMarinesEnv(gym.Env):
             ActionIndex.BUILD_SCV: self.build_scv,
             ActionIndex.BUILD_SUPPLY: self.build_supply_depot,
             ActionIndex.BUILD_BARRACKS: self.build_barracks,
-            ActionIndex.ATTACK: self.attack
+            ActionIndex.ATTACK: self.attack,
+            ActionIndex.STOP_ARMY: self.stop_army,
+            ActionIndex.RETREAT: self.retreat
         }
         self.valid_action_mapping = {
             ActionIndex.BUILD_MARINE: self.can_build_marine,
             ActionIndex.BUILD_SCV: self.can_build_scv,
             ActionIndex.BUILD_SUPPLY: self.can_build_supply_depot,
-            ActionIndex.BUILD_BARRACKS: self.can_build_barracks
+            ActionIndex.BUILD_BARRACKS: self.can_build_barracks,
+            ActionIndex.ATTACK: self.has_any_military_units,
+            ActionIndex.STOP_ARMY: self.has_any_military_units,
+            ActionIndex.RETREAT: self.has_any_military_units
         }
 
     def init_env(self):
@@ -353,7 +360,7 @@ class BuildMarinesEnv(gym.Env):
         obs[ObservationIndex.SUPPLY_ALL] = player[Player.food_cap] / 200
         obs[ObservationIndex.SUPPLY_FREE] = (player[Player.food_cap] - player[Player.food_used]) / 16
         obs[ObservationIndex.SCV_COUNT] = len(self.get_units(Terran.SCV, alliance=1)) / self.scv_limit
-        obs[ObservationIndex.TIME_STEP] = self.raw_obs.observation.game_loop / 20000
+        obs[ObservationIndex.TIME_STEP] = self.raw_obs.observation.game_loop / 28800
         obs[ObservationIndex.SUPPLY_DEPOT_COUNT] = self.supply_depot_index / len(self.supply_depot_locations)
         obs[ObservationIndex.IS_SUPPLY_DEPOT_BUILDING] = self.get_supply_depots_in_progress()
         obs[ObservationIndex.BARRACKS_COUNT] = self.barracks_index / len(self.barracks_locations)
@@ -432,6 +439,9 @@ class BuildMarinesEnv(gym.Env):
     def get_military_units(self) -> List:
         return self.get_units({Terran.Marine}, alliance=1)
 
+    def has_any_military_units(self) -> bool:
+        return len(self.get_military_units()) > 0
+
     def attack_enemy_base_location(self):
         units = self.get_military_units()
         if len(units) == 0:
@@ -470,6 +480,26 @@ class BuildMarinesEnv(gym.Env):
 
     def attack(self) -> List:
         return self.attack_nearest_target() or [self.attack_enemy_base_location()]
+
+    def stop_army(self) -> List:
+        units = self.get_military_units()
+        if len(units) == 0:
+            return []
+        tags = [u.tag for u in units]
+        return [actions.RAW_FUNCTIONS.Stop_quick("now", tags)]
+
+    def get_retreat_position(self) -> np.ndarray:
+        if self.player_on_left:
+            return np.array(self.base_locations[0]) + np.array([20., 0.])
+        else:
+            return np.array(self.base_locations[-1]) + np.array([-20., 0.])
+
+    def retreat(self) -> List:
+        units = self.get_military_units()
+        if len(units) == 0:
+            return []
+        tags = [u.tag for u in units]
+        return [actions.RAW_FUNCTIONS.Move_pt("now", tags, self.get_retreat_position())]
 
     def lower_supply_depots(self):
         supply_depots = self.get_units(Terran.SupplyDepot, alliance=1)

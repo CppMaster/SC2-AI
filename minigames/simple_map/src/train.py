@@ -20,15 +20,15 @@ FLAGS(sys.argv)
 
 logging.basicConfig(encoding='utf-8', level=logging.INFO)
 
-suffix = "supply-depot-reward-0.001_reward-scale-100._score-reward-cum-0.01_gamma-0.9999"
+suffix = "retreat-action_supply-depot-reward-0.01_score-reward-kill-1.5"
 output_path = f"minigames/simple_map/results/logs/{suffix}"
 
 
 env = BuildMarinesEnv(step_mul=8, realtime=False, is_discrete=True)
 env = Monitor(env)
 env = RewardScaleWrapper(env, scale=100.)
-env = SupplyDepotRewardWrapper(env, reward_diff=0.001, free_supply_margin_factor=1.5)
-env = ScoreRewardWrapper(env, reward_diff=0.01, kill_factor=2.0)
+env = SupplyDepotRewardWrapper(env, reward_diff=0.01, free_supply_margin_factor=1.5)
+env = ScoreRewardWrapper(env, reward_diff=0.01, kill_factor=1.5)
 
 # callback = StopTrainingOnNoModelTrainingImprovement(max_no_improvement_evals=10, eval_every_n_step=10000, verbose=1,
 #                                                     min_evals=10)
