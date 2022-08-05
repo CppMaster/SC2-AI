@@ -24,6 +24,7 @@ class ActionIndex(IntEnum):
     ATTACK = 4
     STOP_ARMY = 5
     RETREAT = 6
+    GATHER_ARMY = 7
 
 
 class ObservationIndex(IntEnum):
@@ -73,9 +74,9 @@ class BuildMarinesEnv(gym.Env):
                 use_raw_units=True,
                 feature_dimensions=Dimensions(screen=self.map_dimensions, minimap=self.map_dimensions),
                 use_feature_units=True,
-                crop_to_playable_area=False,
+                crop_to_playable_area=True,
                 show_placeholders=True,
-                allow_cheating_layers=True
+                allow_cheating_layers=False
             ),
             'realtime': realtime,
             'step_mul': step_mul
@@ -101,7 +102,7 @@ class BuildMarinesEnv(gym.Env):
         self.player_on_left = False
         self.supply_depot_locations = np.zeros(shape=(0, 2))
         self.barracks_locations = np.zeros(shape=(0, 2))
-        self.enemy_base_location = np.zeros(shape=(2, ))
+        self.enemy_base_location = np.zeros(shape=(2,))
 
         self.action_mapping = {
             ActionIndex.BUILD_MARINE: self.build_marine,
@@ -110,7 +111,8 @@ class BuildMarinesEnv(gym.Env):
             ActionIndex.BUILD_BARRACKS: self.build_barracks,
             ActionIndex.ATTACK: self.attack,
             ActionIndex.STOP_ARMY: self.stop_army,
-            ActionIndex.RETREAT: self.retreat
+            ActionIndex.RETREAT: self.retreat,
+            ActionIndex.GATHER_ARMY: self.gather_army
         }
         self.valid_action_mapping = {
             ActionIndex.BUILD_MARINE: self.can_build_marine,
@@ -119,7 +121,8 @@ class BuildMarinesEnv(gym.Env):
             ActionIndex.BUILD_BARRACKS: self.can_build_barracks,
             ActionIndex.ATTACK: self.has_any_military_units,
             ActionIndex.STOP_ARMY: self.has_any_military_units,
-            ActionIndex.RETREAT: self.has_any_military_units
+            ActionIndex.RETREAT: self.has_any_military_units,
+            ActionIndex.GATHER_ARMY: self.has_any_military_units
         }
 
     def init_env(self):
@@ -493,6 +496,22 @@ class BuildMarinesEnv(gym.Env):
             return np.array(self.base_locations[0]) + np.array([20., 0.])
         else:
             return np.array(self.base_locations[-1]) + np.array([-20., 0.])
+
+    def get_center_of_military_units(self) -> np.ndarray:
+        units = self.get_military_units()
+        if len(units) == 0:
+            return np.array([0., 0.])
+        positions = np.array([[u.x, u.y] for u in units])
+        return np.median(positions, axis=0)
+
+    def gather_army(self) -> List:
+        units = self.get_military_units()
+        if len(units) == 0:
+            return []
+        tags = [u.tag for u in units]
+        location = self.get_center_of_military_units()
+        self.logger.debug(f"Gather army location: {location}")
+        return [actions.RAW_FUNCTIONS.Attack_pt("now", tags, location)]
 
     def retreat(self) -> List:
         units = self.get_military_units()

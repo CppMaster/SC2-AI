@@ -20,7 +20,7 @@ FLAGS(sys.argv)
 
 logging.basicConfig(encoding='utf-8', level=logging.INFO)
 
-suffix = "retreat-action_supply-depot-reward-0.01_score-reward-kill-1.5"
+suffix = "gather_army"
 output_path = f"minigames/simple_map/results/logs/{suffix}"
 
 
