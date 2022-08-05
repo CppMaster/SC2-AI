@@ -50,20 +50,29 @@ class BuildMarinesEnv(gym.Env):
     rally_position = np.array([20, 36])
     map_dimensions = (88, 96)
     base_locations = [(26, 25), None, None, (54, 68)]
-    targets_to_ignore = {Zerg.Changeling, Zerg.ChangelingMarine, Zerg.ChangelingMarineShield,
-                         Zerg.ChangelingZergling, Zerg.ChangelingZealot, Zerg.Larva, Zerg.Cocoon}
+    target_tags_to_ignore = {Zerg.Changeling, Zerg.ChangelingMarine, Zerg.ChangelingMarineShield,
+                             Zerg.ChangelingZergling, Zerg.ChangelingZealot, Zerg.Larva, Zerg.Cocoon}
+    minerals_tags = {Neutral.MineralField, Neutral.MineralField450, Neutral.MineralField750}
+    cc_optimal_workers = 16
+    cc_max_workers = 24
+    refinery_max_workers = 3
+    mineral_max_workers = 3
+    mineral_optimal_workers = 2
 
     def __init__(self, step_mul: int = 8, realtime: bool = False, is_discrete: bool = True,
                  supple_depot_limit: Optional[int] = None, scv_limit: Optional[int] = 25):
         self.settings = {
             'map_name': "Simple64",
-            'players': [sc2_env.Agent(sc2_env.Race.terran), sc2_env.Bot(sc2_env.Race.zerg, sc2_env.Difficulty.easy)],
+            'players': [sc2_env.Agent(sc2_env.Race.terran),
+                        sc2_env.Bot(sc2_env.Race.random, sc2_env.Difficulty.very_easy)],
             'agent_interface_format': features.AgentInterfaceFormat(
                 action_space=actions.ActionSpace.RAW,
                 use_raw_units=True,
                 feature_dimensions=Dimensions(screen=self.map_dimensions, minimap=self.map_dimensions),
                 use_feature_units=True,
-                crop_to_playable_area=False
+                crop_to_playable_area=False,
+                show_placeholders=True,
+                allow_cheating_layers=True
             ),
             'realtime': realtime,
             'step_mul': step_mul
@@ -152,13 +161,13 @@ class BuildMarinesEnv(gym.Env):
 
     def send_idle_workers_to_work(self) -> List:
         idle_scvs = list(filter(lambda u: u[FeatureUnit.order_length] == 0, self.get_units(Terran.SCV)))
-        mineral = self.get_random_mineral()
-        if mineral is None:
-            return []
+        working_targets = self.get_working_targets(len(idle_scvs))
         orders = []
         for s_i, idle_scv in enumerate(idle_scvs):
+            if s_i >= len(working_targets):
+                break
             orders.append(actions.RAW_FUNCTIONS.Harvest_Gather_unit(
-                "now", idle_scv[FeatureUnit.tag], mineral[FeatureUnit.tag]
+                "now", idle_scv[FeatureUnit.tag], working_targets[s_i][FeatureUnit.tag]
             ))
         return orders
 
@@ -260,10 +269,43 @@ class BuildMarinesEnv(gym.Env):
         return [actions.RAW_FUNCTIONS.Train_Marine_quick("now", barracks.tag)]
 
     def get_random_mineral(self):
-        minerals = self.get_units(Neutral.MineralField)
+        minerals = self.get_units(self.minerals_tags)
         if len(minerals) == 0:
             return None
         return random.choice(minerals)
+
+    def get_working_targets(self, n_idle_workers: int) -> List:
+        minerals = self.get_units(self.minerals_tags)
+        refineries = list(filter(lambda r: r[FeatureUnit.build_progress] == 100, self.get_units(Terran.Refinery)))
+        ccs = sorted(list(
+            filter(lambda c: c[FeatureUnit.build_progress] == 100, self.get_units(Terran.CommandCenter))
+        ), key=lambda c: c[FeatureUnit.x])
+        cc_to_minerals = defaultdict(list)
+        for mineral in minerals:
+            for cc_idx, cc in enumerate(ccs):
+                if np.power(mineral.x - cc.x, 2) + np.power(mineral.y - cc.y, 2) < 100:
+                    cc_to_minerals[cc_idx].append(mineral)
+
+        cc_allocations = [c[FeatureUnit.assigned_harvesters] for c in ccs]
+        refinery_allocations = [r[FeatureUnit.assigned_harvesters] for r in refineries]
+        worker_targets: List = []
+        for w_i in range(n_idle_workers):
+            for c_i in range(len(ccs)):
+                if cc_allocations[c_i] < len(cc_to_minerals[c_i]) * self.mineral_optimal_workers:
+                    cc_allocations[c_i] += 1
+                    worker_targets.append(random.choice(cc_to_minerals[c_i]))
+                    break
+            for r_i in range(len(refineries)):
+                if refinery_allocations[r_i] < self.refinery_max_workers:
+                    refinery_allocations[r_i] += 1
+                    worker_targets.append(refineries[r_i])
+                    break
+            for c_i in range(len(ccs)):
+                if cc_allocations[c_i] < len(cc_to_minerals[c_i]) * self.mineral_max_workers:
+                    cc_allocations[c_i] += 1
+                    worker_targets.append(random.choice(cc_to_minerals[c_i]))
+                    break
+        return worker_targets
 
     def get_nearest_worker(self, location: np.ndarray):
         all_workers = self.get_units(Terran.SCV)
@@ -285,7 +327,7 @@ class BuildMarinesEnv(gym.Env):
         return workers[np.sum(np.power(worker_positions - location, 2), axis=1).argmin()]
 
     def get_units(self, unit_type: Optional[Union[int, Set[int]]] = None,
-                  alliance: Optional[Union[int, Set[int]]] = 1) -> List:
+                  alliance: Optional[Union[int, Set[int]]] = None) -> List:
         units = self.raw_obs.observation.raw_units
         if unit_type is not None:
             if isinstance(unit_type, int):
@@ -301,8 +343,8 @@ class BuildMarinesEnv(gym.Env):
         obs = np.zeros(shape=self.observation_space.shape)
         player = self.raw_obs.observation.player
         obs[ObservationIndex.MINERALS] = player[Player.minerals] / 500
-        obs[ObservationIndex.SUPPLY_TAKEN] = player[Player.food_used] / 150
-        obs[ObservationIndex.SUPPLY_ALL] = player[Player.food_cap] / 150
+        obs[ObservationIndex.SUPPLY_TAKEN] = player[Player.food_used] / 200
+        obs[ObservationIndex.SUPPLY_ALL] = player[Player.food_cap] / 200
         obs[ObservationIndex.SUPPLY_FREE] = (player[Player.food_cap] - player[Player.food_used]) / 16
         obs[ObservationIndex.SCV_COUNT] = len(self.get_units(Terran.SCV)) / self.scv_limit
         obs[ObservationIndex.TIME_STEP] = self.raw_obs.observation.game_loop / 20000
@@ -391,7 +433,7 @@ class BuildMarinesEnv(gym.Env):
 
     def attack_nearest_target(self) -> List:
         targets = self.get_units(alliance=4)
-        targets = list(filter(lambda t: t.unit_type not in self.targets_to_ignore, targets))
+        targets = list(filter(lambda t: t.unit_type not in self.target_tags_to_ignore, targets))
         if len(targets) == 0:
             return []
         units = self.get_military_units()

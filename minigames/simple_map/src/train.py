@@ -20,7 +20,7 @@ FLAGS(sys.argv)
 
 logging.basicConfig(encoding='utf-8', level=logging.INFO)
 
-suffix = "supply-depot-reward-0.001_reward-scale-100._score-reward-0.01"
+suffix = "supply-depot-reward-0.001_reward-scale-100._score-reward-0.01_gamma-0.9999"
 output_path = f"minigames/simple_map/results/logs/{suffix}"
 
 
@@ -35,7 +35,7 @@ env = ScoreRewardWrapper(env, reward_diff=0.01)
 
 model = MaskablePPO(
     "MlpPolicy", env, verbose=1, tensorboard_log=output_path,
-    gamma=0.99, policy_kwargs=dict(activation_fn=nn.LeakyReLU, ortho_init=True),
+    gamma=0.9999, policy_kwargs=dict(activation_fn=nn.LeakyReLU, ortho_init=True),
     batch_size=64, learning_rate=3e-4, normalize_advantage=True
 )
 model.learn(10000000, callback=None, reset_num_timesteps=True)
