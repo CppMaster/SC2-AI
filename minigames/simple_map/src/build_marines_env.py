@@ -127,7 +127,7 @@ class BuildMarinesEnv(gym.Env):
         self.rallies_set: Set[int] = set()
 
         self.raw_obs = self.env.reset()[0]
-        self.player_on_left = self.get_units(Terran.CommandCenter)[0].x < 32
+        self.player_on_left = self.get_units(Terran.CommandCenter, alliance=1)[0].x < 32
         self.supply_depot_locations = self.get_supply_depot_locations()
         self.barracks_locations = self.get_barracks_locations()
         self.enemy_base_location = self.get_enemy_base_location()
@@ -163,7 +163,7 @@ class BuildMarinesEnv(gym.Env):
         return mapped_actions
 
     def send_idle_workers_to_work(self) -> List:
-        idle_scvs = list(filter(lambda u: u[FeatureUnit.order_length] == 0, self.get_units(Terran.SCV)))
+        idle_scvs = list(filter(lambda u: u[FeatureUnit.order_length] == 0, self.get_units(Terran.SCV, alliance=1)))
         working_targets = self.get_working_targets(len(idle_scvs))
         orders = []
         for s_i, idle_scv in enumerate(idle_scvs):
@@ -180,9 +180,9 @@ class BuildMarinesEnv(gym.Env):
             return False
         if player[Player.minerals] < 50:
             return False
-        if len(self.get_units(Terran.SCV)) >= self.scv_limit:
+        if len(self.get_units(Terran.SCV, alliance=1)) >= self.scv_limit:
             return False
-        ccs = self.get_units(Terran.CommandCenter)
+        ccs = self.get_units(Terran.CommandCenter, alliance=1)
         if len(ccs) == 0:
             return False
 
@@ -194,7 +194,8 @@ class BuildMarinesEnv(gym.Env):
 
     def build_scv(self) -> List:
         if self.can_build_scv():
-            return [actions.RAW_FUNCTIONS.Train_SCV_quick("now", self.get_units(Terran.CommandCenter)[0].tag)]
+            return [actions.RAW_FUNCTIONS.Train_SCV_quick("now",
+                                                          self.get_units(Terran.CommandCenter, alliance=1)[0].tag)]
         return []
 
     def can_build_supply_depot(self) -> bool:
@@ -203,7 +204,8 @@ class BuildMarinesEnv(gym.Env):
         if self.supply_depot_index >= len(self.supply_depot_locations):
             return False
         if self.supple_depot_limit is not None and \
-                len(self.get_units({Terran.SupplyDepot, Terran.SupplyDepotLowered})) >= self.supple_depot_limit:
+                len(self.get_units({Terran.SupplyDepot, Terran.SupplyDepotLowered}, alliance=1)) \
+                >= self.supple_depot_limit:
             return False
         return True
 
@@ -241,7 +243,7 @@ class BuildMarinesEnv(gym.Env):
         return [actions.RAW_FUNCTIONS.Build_Barracks_pt("now", worker[FeatureUnit.tag], location)]
 
     def get_free_barracks(self):
-        barracks = self.get_units(Terran.Barracks)
+        barracks = self.get_units(Terran.Barracks, alliance=1)
         for b in barracks:
             if b[FeatureUnit.build_progress] < 100:
                 continue
@@ -279,9 +281,10 @@ class BuildMarinesEnv(gym.Env):
 
     def get_working_targets(self, n_idle_workers: int) -> List:
         minerals = self.get_units(self.minerals_tags)
-        refineries = list(filter(lambda r: r[FeatureUnit.build_progress] == 100, self.get_units(Terran.Refinery)))
+        refineries = list(filter(lambda r: r[FeatureUnit.build_progress] == 100,
+                                 self.get_units(Terran.Refinery, alliance=1)))
         ccs = sorted(list(
-            filter(lambda c: c[FeatureUnit.build_progress] == 100, self.get_units(Terran.CommandCenter))
+            filter(lambda c: c[FeatureUnit.build_progress] == 100, self.get_units(Terran.CommandCenter, alliance=1))
         ), key=lambda c: c[FeatureUnit.x])
         cc_to_minerals = defaultdict(list)
         for mineral in minerals:
@@ -311,7 +314,7 @@ class BuildMarinesEnv(gym.Env):
         return worker_targets
 
     def get_nearest_worker(self, location: np.ndarray):
-        all_workers = self.get_units(Terran.SCV)
+        all_workers = self.get_units(Terran.SCV, alliance=1)
         idle_workers = list(filter(lambda u: u[FeatureUnit.order_length] == 0, all_workers))
         worker = self.get_nearest_worker_from_list(location, idle_workers)
         if worker is not None:
@@ -349,7 +352,7 @@ class BuildMarinesEnv(gym.Env):
         obs[ObservationIndex.SUPPLY_TAKEN] = player[Player.food_used] / 200
         obs[ObservationIndex.SUPPLY_ALL] = player[Player.food_cap] / 200
         obs[ObservationIndex.SUPPLY_FREE] = (player[Player.food_cap] - player[Player.food_used]) / 16
-        obs[ObservationIndex.SCV_COUNT] = len(self.get_units(Terran.SCV)) / self.scv_limit
+        obs[ObservationIndex.SCV_COUNT] = len(self.get_units(Terran.SCV, alliance=1)) / self.scv_limit
         obs[ObservationIndex.TIME_STEP] = self.raw_obs.observation.game_loop / 20000
         obs[ObservationIndex.SUPPLY_DEPOT_COUNT] = self.supply_depot_index / len(self.supply_depot_locations)
         obs[ObservationIndex.IS_SUPPLY_DEPOT_BUILDING] = self.get_supply_depots_in_progress()
@@ -375,23 +378,25 @@ class BuildMarinesEnv(gym.Env):
 
     def get_supply_depots_in_progress(self) -> int:
         return sum(
-            [supply_depot[FeatureUnit.build_progress] < 100 for supply_depot in self.get_units(Terran.SupplyDepot)]
+            [supply_depot[FeatureUnit.build_progress] < 100 for supply_depot
+             in self.get_units(Terran.SupplyDepot, alliance=1)]
         )
 
     def get_barracks_in_progress(self) -> int:
         return sum(
-            [supply_depot[FeatureUnit.build_progress] < 100 for supply_depot in self.get_units(Terran.Barracks)]
+            [supply_depot[FeatureUnit.build_progress] < 100 for supply_depot
+             in self.get_units(Terran.Barracks, alliance=1)]
         )
 
     def get_svc_in_progress(self) -> bool:
-        ccs = self.get_units(Terran.CommandCenter)
+        ccs = self.get_units(Terran.CommandCenter, alliance=1)
         if len(ccs) == 0:
             return False
         return ccs[0][FeatureUnit.order_length] > 0
 
     def get_marines_in_progress(self) -> int:
         return sum(
-            [b[FeatureUnit.order_length] > 0 for b in self.get_units(Terran.Barracks)]
+            [b[FeatureUnit.order_length] > 0 for b in self.get_units(Terran.Barracks, alliance=1)]
         )
 
     def get_spots_to_build(self) -> np.ndarray:
@@ -400,7 +405,7 @@ class BuildMarinesEnv(gym.Env):
         return spots
 
     def get_supply_depot_locations(self) -> np.ndarray:
-        cc = self.get_units(Terran.CommandCenter)[0]
+        cc = self.get_units(Terran.CommandCenter, alliance=1)[0]
         side_multiplier = (1 if self.player_on_left else -1)
         start_position = (cc.x + 4 * side_multiplier, cc.y)
         positions = []
@@ -411,7 +416,7 @@ class BuildMarinesEnv(gym.Env):
         return np.array(positions)
 
     def get_barracks_locations(self) -> np.ndarray:
-        cc = self.get_units(Terran.CommandCenter)[0]
+        cc = self.get_units(Terran.CommandCenter, alliance=1)[0]
         side_multiplier = (1 if self.player_on_left else -1)
         start_position = (cc.x - 1 * side_multiplier, cc.y + 2)
         positions = []
@@ -425,7 +430,7 @@ class BuildMarinesEnv(gym.Env):
         return np.array(self.base_locations[-1] if self.player_on_left else self.base_locations[0])
 
     def get_military_units(self) -> List:
-        return self.get_units({Terran.Marine})
+        return self.get_units({Terran.Marine}, alliance=1)
 
     def attack_enemy_base_location(self):
         units = self.get_military_units()
@@ -467,7 +472,7 @@ class BuildMarinesEnv(gym.Env):
         return self.attack_nearest_target() or [self.attack_enemy_base_location()]
 
     def lower_supply_depots(self):
-        supply_depots = self.get_units(Terran.SupplyDepot)
+        supply_depots = self.get_units(Terran.SupplyDepot, alliance=1)
         valid_supply_depots = list(filter(lambda s: s.build_progress == 100 and s.order_length == 0, supply_depots))
         if len(valid_supply_depots) == 0:
             return None
@@ -493,8 +498,8 @@ class BuildMarinesEnv(gym.Env):
         else:
             raise NotImplementedError("Action mask not implemented for non-discrete action space")
 
-    def get_score(self) -> int:
-        return self.raw_obs.observation.score_cumulative.score
+    def get_score_cumulative(self):
+        return self.raw_obs.observation.score_cumulative
 
     def should_surrender(self) -> bool:
-        return len(self.get_units(Terran.CommandCenter)) == 0
+        return len(self.get_units(Terran.CommandCenter, alliance=1)) == 0
