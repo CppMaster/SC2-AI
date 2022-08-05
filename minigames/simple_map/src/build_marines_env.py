@@ -26,8 +26,8 @@ class ActionIndex(IntEnum):
 
 class ObservationIndex(IntEnum):
     MINERALS = 0        # scale 500
-    SUPPLY_TAKEN = 1    # scale 150
-    SUPPLY_ALL = 2      # scale 150
+    SUPPLY_TAKEN = 1    # scale 200
+    SUPPLY_ALL = 2      # scale 200
     SUPPLY_FREE = 3     # scale 16
     SCV_COUNT = 4       # scale 50
     TIME_STEP = 5       # scale 20000
@@ -41,6 +41,7 @@ class ObservationIndex(IntEnum):
     CAN_BUILD_MARINE = 13
     SCV_IN_PROGRESS = 14
     MARINES_IN_PROGRESS = 15
+    MILITARY_COUNT = 16     # scale 100
 
 
 class BuildMarinesEnv(gym.Env):
@@ -64,7 +65,7 @@ class BuildMarinesEnv(gym.Env):
         self.settings = {
             'map_name': "Simple64",
             'players': [sc2_env.Agent(sc2_env.Race.terran),
-                        sc2_env.Bot(sc2_env.Race.random, sc2_env.Difficulty.very_easy)],
+                        sc2_env.Bot(sc2_env.Race.random, sc2_env.Difficulty.easy)],
             'agent_interface_format': features.AgentInterfaceFormat(
                 action_space=actions.ActionSpace.RAW,
                 use_raw_units=True,
@@ -360,6 +361,7 @@ class BuildMarinesEnv(gym.Env):
         obs[ObservationIndex.CAN_BUILD_SUPPLY_DEPOT] = self.can_build_supply_depot()
         obs[ObservationIndex.SCV_IN_PROGRESS] = self.get_svc_in_progress()
         obs[ObservationIndex.MARINES_IN_PROGRESS] = self.get_marines_in_progress() / len(self.barracks_locations)
+        obs[ObservationIndex.MILITARY_COUNT] = player[Player.army_count] / 100
         return obs
 
     def get_supply_taken(self) -> int:
