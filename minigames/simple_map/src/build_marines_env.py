@@ -136,6 +136,8 @@ class BuildMarinesEnv(gym.Env):
     def step(self, action: Optional[np.ndarray] = None):
         self.raw_obs = self.env.step(self.get_actions(action))[0]
         derived_obs = self.get_derived_obs()
+        if self.should_surrender():
+            return derived_obs, -1, True, {}
         return derived_obs, self.raw_obs.reward, self.raw_obs.last(), {}
 
     def get_actions(self, action: Union[np.ndarray, int]) -> List:
@@ -491,3 +493,6 @@ class BuildMarinesEnv(gym.Env):
 
     def get_score(self) -> int:
         return self.raw_obs.observation.score_cumulative.score
+
+    def should_surrender(self) -> bool:
+        return len(self.get_units(Terran.CommandCenter)) == 0
