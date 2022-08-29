@@ -53,7 +53,8 @@ class BuildMarinesEnv(gym.Env):
 
     rally_position = np.array([20, 36])
     map_dimensions = (88, 96)
-    base_locations = [(26, 25), None, None, (54, 68)]
+    # no sure about the 2nd location
+    base_locations = [(26, 25), (60, 19), (32, 72), (54, 68)]
     target_tags_to_ignore = {Zerg.Changeling, Zerg.ChangelingMarine, Zerg.ChangelingMarineShield,
                              Zerg.ChangelingZergling, Zerg.ChangelingZealot, Zerg.Larva, Zerg.Cocoon}
     minerals_tags = {Neutral.MineralField, Neutral.MineralField450, Neutral.MineralField750}
@@ -67,7 +68,7 @@ class BuildMarinesEnv(gym.Env):
                  supple_depot_limit: Optional[int] = None, scv_limit: Optional[int] = 25,
                  difficulty: Difficulty = Difficulty.medium):
         self.settings = {
-            'map_name': "Simple64",
+            'map_name': "Simple64_towers",
             'players': [sc2_env.Agent(sc2_env.Race.terran), sc2_env.Bot(sc2_env.Race.random, difficulty)],
             'agent_interface_format': features.AgentInterfaceFormat(
                 action_space=actions.ActionSpace.RAW,
@@ -101,7 +102,7 @@ class BuildMarinesEnv(gym.Env):
         self.rallies_set: Set[int] = set()
         self.player_on_left = False
         self.supply_depot_locations = np.zeros(shape=(0, 2))
-        self.barracks_locations = np.zeros(shape=(0, 2))
+        self.production_buildings_locations = np.zeros(shape=(0, 2))
         self.enemy_base_location = np.zeros(shape=(2,))
 
         self.action_mapping = {
@@ -139,7 +140,7 @@ class BuildMarinesEnv(gym.Env):
         self.raw_obs = self.env.reset()[0]
         self.player_on_left = self.get_units(Terran.CommandCenter, alliance=1)[0].x < 32
         self.supply_depot_locations = self.get_supply_depot_locations()
-        self.barracks_locations = self.get_barracks_locations()
+        self.production_buildings_locations = self.get_barracks_locations()
         self.enemy_base_location = self.get_enemy_base_location()
 
         return self.get_derived_obs()
@@ -235,7 +236,7 @@ class BuildMarinesEnv(gym.Env):
     def can_build_barracks(self) -> bool:
         if self.raw_obs.observation.player[Player.minerals] < 150:
             return False
-        if self.barracks_index >= len(self.barracks_locations):
+        if self.barracks_index >= len(self.production_buildings_locations):
             return False
         return True
 
@@ -243,7 +244,7 @@ class BuildMarinesEnv(gym.Env):
         if not self.can_build_barracks():
             return []
 
-        location = self.barracks_locations[self.barracks_index]
+        location = self.production_buildings_locations[self.barracks_index]
         worker = self.get_nearest_worker(location)
         if worker is None:
             self.logger.warning(f"Free worker not found")
@@ -366,14 +367,14 @@ class BuildMarinesEnv(gym.Env):
         obs[ObservationIndex.TIME_STEP] = self.raw_obs.observation.game_loop / 28800
         obs[ObservationIndex.SUPPLY_DEPOT_COUNT] = self.supply_depot_index / len(self.supply_depot_locations)
         obs[ObservationIndex.IS_SUPPLY_DEPOT_BUILDING] = self.get_supply_depots_in_progress()
-        obs[ObservationIndex.BARRACKS_COUNT] = self.barracks_index / len(self.barracks_locations)
+        obs[ObservationIndex.BARRACKS_COUNT] = self.barracks_index / len(self.production_buildings_locations)
         obs[ObservationIndex.IS_BARRACKS_BUILDING] = self.get_barracks_in_progress()
         obs[ObservationIndex.CAN_BUILD_MARINE] = self.can_build_marine()
         obs[ObservationIndex.CAN_BUILD_SCV] = self.can_build_scv()
         obs[ObservationIndex.CAN_BUILD_BARRACKS] = self.can_build_barracks()
         obs[ObservationIndex.CAN_BUILD_SUPPLY_DEPOT] = self.can_build_supply_depot()
         obs[ObservationIndex.SCV_IN_PROGRESS] = self.get_svc_in_progress()
-        obs[ObservationIndex.MARINES_IN_PROGRESS] = self.get_marines_in_progress() / len(self.barracks_locations)
+        obs[ObservationIndex.MARINES_IN_PROGRESS] = self.get_marines_in_progress() / len(self.production_buildings_locations)
         obs[ObservationIndex.MILITARY_COUNT] = player[Player.army_count] / 100
         return obs
 
