@@ -550,5 +550,8 @@ class BuildMarinesEnv(gym.Env):
     def get_score_cumulative(self):
         return self.raw_obs.observation.score_cumulative
 
+    def get_score_by_category(self):
+        return self.raw_obs.observation.score_by_category
+
     def should_surrender(self) -> bool:
         return len(self.get_units(Terran.CommandCenter, alliance=1)) == 0
