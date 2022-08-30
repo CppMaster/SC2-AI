@@ -26,6 +26,12 @@ class ActionIndex(IntEnum):
     RETREAT = 6
     GATHER_ARMY = 7
 
+    @staticmethod
+    def int_to_name(value: int):
+        if value == len(ActionIndex):
+            return "NO_ACTION"
+        return ActionIndex(value).name
+
 
 class ObservationIndex(IntEnum):
     MINERALS = 0        # scale 500
@@ -54,7 +60,7 @@ class BuildMarinesEnv(gym.Env):
     rally_position = np.array([20, 36])
     map_dimensions = (88, 96)
     # no sure about the 2nd location
-    base_locations = [(26, 25), (60, 19), (32, 72), (54, 68)]
+    base_locations = [(26, 35), (57, 31), (23, 72), (54, 68)]
     target_tags_to_ignore = {Zerg.Changeling, Zerg.ChangelingMarine, Zerg.ChangelingMarineShield,
                              Zerg.ChangelingZergling, Zerg.ChangelingZealot, Zerg.Larva, Zerg.Cocoon}
     minerals_tags = {Neutral.MineralField, Neutral.MineralField450, Neutral.MineralField750}
@@ -63,6 +69,8 @@ class BuildMarinesEnv(gym.Env):
     refinery_max_workers = 3
     mineral_max_workers = 3
     mineral_optimal_workers = 2
+    max_game_step = 28800
+    army_actions = {ActionIndex.ATTACK, ActionIndex.RETREAT, ActionIndex.STOP_ARMY, ActionIndex.GATHER_ARMY}
 
     def __init__(self, step_mul: int = 8, realtime: bool = False, is_discrete: bool = True,
                  supple_depot_limit: Optional[int] = None, scv_limit: Optional[int] = 25,
@@ -364,7 +372,7 @@ class BuildMarinesEnv(gym.Env):
         obs[ObservationIndex.SUPPLY_ALL] = player[Player.food_cap] / 200
         obs[ObservationIndex.SUPPLY_FREE] = (player[Player.food_cap] - player[Player.food_used]) / 16
         obs[ObservationIndex.SCV_COUNT] = len(self.get_units(Terran.SCV, alliance=1)) / self.scv_limit
-        obs[ObservationIndex.TIME_STEP] = self.raw_obs.observation.game_loop / 28800
+        obs[ObservationIndex.TIME_STEP] = self.get_normalized_time()
         obs[ObservationIndex.SUPPLY_DEPOT_COUNT] = self.supply_depot_index / len(self.supply_depot_locations)
         obs[ObservationIndex.IS_SUPPLY_DEPOT_BUILDING] = self.get_supply_depots_in_progress()
         obs[ObservationIndex.BARRACKS_COUNT] = self.barracks_index / len(self.production_buildings_locations)
@@ -556,3 +564,6 @@ class BuildMarinesEnv(gym.Env):
 
     def should_surrender(self) -> bool:
         return len(self.get_units(Terran.CommandCenter, alliance=1)) == 0
+
+    def get_normalized_time(self) -> float:
+        return self.raw_obs.observation.game_loop[0] / self.max_game_step

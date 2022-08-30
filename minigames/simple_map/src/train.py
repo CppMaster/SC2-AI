@@ -11,6 +11,7 @@ from torch import nn
 
 from callbacks.log_episode_callabck import LogEpisodeCallback
 from callbacks.stop_training_on_no_model_training_improvement import StopTrainingOnNoModelTrainingImprovement
+from minigames.simple_map.src.attack_reward_wrapper import AttackRewardWrapper
 from minigames.simple_map.src.score_reward_wrapper import ScoreRewardWrapper
 from minigames.simple_map.src.supply_depot_reward_wrapper import SupplyDepotRewardWrapper
 from minigames.simple_map.src.build_marines_env import BuildMarinesEnv, ActionIndex
@@ -21,19 +22,23 @@ from wrappers.reward_scale_wrapper import RewardScaleWrapper
 FLAGS = flags.FLAGS
 FLAGS(sys.argv)
 
-logging.basicConfig(encoding='utf-8', level=logging.DEBUG)
+logging.basicConfig(encoding='utf-8', level=logging.INFO)
 
-suffix = "improved-score-reward_kill-factor-1-0_n-steps-10000"
+suffix = "supply-depot-reward-005_map-towers_lr-0.000005_attack-reward-wrapper_attack-penalty"
 output_path = f"minigames/simple_map/results/logs/{suffix}"
 
 original_env = BuildMarinesEnv(step_mul=4, realtime=False, is_discrete=True, difficulty=Difficulty.medium)
 env = Monitor(original_env)
 env = RewardScaleWrapper(env, scale=100.)
-env = SupplyDepotRewardWrapper(env, reward_diff=0.01, free_supply_margin_factor=1.5)
+env = SupplyDepotRewardWrapper(env, reward_diff=0.05, free_supply_margin_factor=1.5)
 env = ScoreRewardWrapper(env, reward_diff=0.01, kill_factor=1.0, draw_plot=False)
 # env = ReduceActionSpaceWrapper(env, original_env,
 #                                [ActionIndex.BUILD_MARINE, ActionIndex.BUILD_SCV, ActionIndex.BUILD_SUPPLY,
 #                                 ActionIndex.BUILD_BARRACKS, ActionIndex.ATTACK])
+env = AttackRewardWrapper(env, reward_diff=1.0, time_offset=0.2, custom_multipliers={
+    ActionIndex.ATTACK: 1.0, ActionIndex.RETREAT: -1.0, ActionIndex.STOP_ARMY: -0.2, ActionIndex.GATHER_ARMY: 0.5
+}, action_penalty=0.2)
+env.logger.setLevel(logging.DEBUG)
 env = AddActionAndRewardToObservationWrapper(env, reward_scale=0.01)
 
 # callback = StopTrainingOnNoModelTrainingImprovement(max_no_improvement_evals=10, eval_every_n_step=10000, verbose=1,
@@ -42,7 +47,7 @@ env = AddActionAndRewardToObservationWrapper(env, reward_scale=0.01)
 model = RecurrentPPO(
     "MlpLstmPolicy", env, verbose=1, tensorboard_log=output_path,
     gamma=0.9999, policy_kwargs=dict(activation_fn=nn.LeakyReLU, ortho_init=True),
-    batch_size=64, learning_rate=1e-5, normalize_advantage=True, n_steps=10000
+    batch_size=64, learning_rate=5e-6, normalize_advantage=True, n_steps=10000
 )
 callback = LogEpisodeCallback(mean_episodes=[5, 25, 100])
 
