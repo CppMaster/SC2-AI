@@ -5,7 +5,7 @@ import gym
 import numpy as np
 
 from minigames.simple_map.src.build_marines_env import BuildMarinesEnv
-from plot_utils.real_time_plot import RealTimePlot
+from utils.plot.real_time_plot import RealTimePlot
 from wrappers.utils import unwrap_wrapper_or_env
 
 

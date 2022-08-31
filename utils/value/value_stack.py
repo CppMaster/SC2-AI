@@ -13,6 +13,8 @@ class ValueStack:
         self.values: List[np.ndarray] = []
         self.max_size = n_last_values + sum(self.n_average_prev_last_values)
         self.zero_value = np.zeros(self.value_shape)
+        self.result_shape = (n_last_values + len(n_average_prev_last_values),) + self.value_shape
+        self.n_return_elements = np.prod(self.result_shape)
 
     def add_value(self, value: np.ndarray):
         assert value.shape == self.value_shape, f"Wrong value shape. Expected: {self.value_shape}, got: {value.shape}"

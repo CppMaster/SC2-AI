@@ -18,13 +18,14 @@ from minigames.simple_map.src.build_marines_env import BuildMarinesEnv, ActionIn
 from wrappers.add_action_and_reward_to_observation_wrapper import AddActionAndRewardToObservationWrapper
 from wrappers.reduce_action_space_wrapper import ReduceActionSpaceWrapper
 from wrappers.reward_scale_wrapper import RewardScaleWrapper
+from wrappers.stack_observations_actions_rewards_wrapper import StackObservationsActionRewardsWrapper, ValueStackConfig
 
 FLAGS = flags.FLAGS
 FLAGS(sys.argv)
 
 logging.basicConfig(encoding='utf-8', level=logging.INFO)
 
-suffix = "supply-depot-reward-005_map-towers_lr-0.000005_attack-reward-wrapper_attack-penalty"
+suffix = "maskable_stack-obs"
 output_path = f"minigames/simple_map/results/logs/{suffix}"
 
 original_env = BuildMarinesEnv(step_mul=4, realtime=False, is_discrete=True, difficulty=Difficulty.medium)
@@ -38,15 +39,21 @@ env = ScoreRewardWrapper(env, reward_diff=0.01, kill_factor=1.0, draw_plot=False
 #                                 ActionIndex.BUILD_BARRACKS, ActionIndex.ATTACK])
 env = AttackRewardWrapper(env, reward_diff=1.0, time_offset=0.2, custom_multipliers={
     ActionIndex.ATTACK: 1.0, ActionIndex.RETREAT: -1.0, ActionIndex.STOP_ARMY: -0.2, ActionIndex.GATHER_ARMY: 0.5
-}, action_penalty=0.2)
+}, action_penalty=0.1)
 env.logger.setLevel(logging.DEBUG)
-env = AddActionAndRewardToObservationWrapper(env, reward_scale=0.01)
+# env = AddActionAndRewardToObservationWrapper(env, reward_scale=0.01)
+env = StackObservationsActionRewardsWrapper(
+    env, reward_scale=0.01,
+    observation_value_stack_config=ValueStackConfig(1, [5]),
+    action_value_stack_config=ValueStackConfig(10, [20]),
+    reward_value_stack_config=ValueStackConfig(20, [50])
+)
 
 # callback = StopTrainingOnNoModelTrainingImprovement(max_no_improvement_evals=10, eval_every_n_step=10000, verbose=1,
 #                                                     min_evals=10)
 
-model = RecurrentPPO(
-    "MlpLstmPolicy", env, verbose=1, tensorboard_log=output_path,
+model = MaskablePPO(
+    "MlpPolicy", env, verbose=1, tensorboard_log=output_path,
     gamma=0.9999, policy_kwargs=dict(activation_fn=nn.LeakyReLU, ortho_init=True),
     batch_size=64, learning_rate=5e-6, normalize_advantage=True, n_steps=10000
 )
