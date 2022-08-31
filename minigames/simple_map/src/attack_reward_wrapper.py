@@ -33,14 +33,15 @@ class AttackRewardWrapper(gym.RewardWrapper):
         self.action_penalty = action_penalty
 
     def reward(self, reward):
+        if self.current_command == self.last_command:
+            return reward
         time = self.source_env.get_normalized_time() - self.time_offset
         multiplier = self.multipliers[self.current_command] - self.multipliers[self.last_command]
         multiplier -= self.action_penalty
         shaped_reward = time * multiplier * self.reward_diff
-        if shaped_reward:
-            self.logger.debug(f"Shaped reward: {shaped_reward}n\ttime: {time},\tmultiplier: {multiplier},\t"
-                              f"last command: {ActionIndex.int_to_name(self.last_command)},\t"
-                              f"current command: {ActionIndex.int_to_name(self.current_command)}")
+        self.logger.debug(f"Shaped reward: {shaped_reward}n\ttime: {time},\tmultiplier: {multiplier},\t"
+                          f"last command: {ActionIndex.int_to_name(self.last_command)},\t"
+                          f"current command: {ActionIndex.int_to_name(self.current_command)}")
         return reward + shaped_reward
 
     def reset(self, **kwargs):

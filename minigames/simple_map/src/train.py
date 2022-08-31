@@ -31,6 +31,7 @@ original_env = BuildMarinesEnv(step_mul=4, realtime=False, is_discrete=True, dif
 env = Monitor(original_env)
 env = RewardScaleWrapper(env, scale=100.)
 env = SupplyDepotRewardWrapper(env, reward_diff=0.05, free_supply_margin_factor=1.5)
+env.logger.setLevel(logging.DEBUG)
 env = ScoreRewardWrapper(env, reward_diff=0.01, kill_factor=1.0, draw_plot=False)
 # env = ReduceActionSpaceWrapper(env, original_env,
 #                                [ActionIndex.BUILD_MARINE, ActionIndex.BUILD_SCV, ActionIndex.BUILD_SUPPLY,
