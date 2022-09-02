@@ -1,3 +1,4 @@
+import logging
 import random
 import sys
 from absl import flags
@@ -11,6 +12,7 @@ from minigames.simple_map.src.planned_action_env.env import PlannedActionEnv, Ac
 FLAGS = flags.FLAGS
 FLAGS(sys.argv)
 
+logging.basicConfig(encoding='utf-8', level=logging.DEBUG)
 
 env = PlannedActionEnv(step_mul=1, realtime=False)
 monitor_env = Monitor(env)

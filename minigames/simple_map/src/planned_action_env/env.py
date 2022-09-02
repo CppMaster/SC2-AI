@@ -7,7 +7,7 @@ from typing import Optional, List, Set, Union
 
 import gym
 import numpy as np
-from gym.spaces import MultiDiscrete, Box, Discrete
+from gym.spaces import Box, Discrete
 from pysc2.env import sc2_env
 from pysc2.env.sc2_env import SC2Env, Dimensions, Difficulty
 from pysc2.lib import features, actions
@@ -61,7 +61,7 @@ class ActionRequirement:
 
     @property
     def can_do_instantly(self) -> bool:
-        return not self.buildings and len(self.buildings) == 0 and not self.queue and not self.invalid
+        return not self.resources and len(self.buildings) == 0 and not self.queue and not self.invalid
 
 
 class PlannedActionEnv(gym.Env):
@@ -169,6 +169,8 @@ class PlannedActionEnv(gym.Env):
         total_rewards = 0
         while len(self.pending_actions) > 0:
             engine_action = self.get_action()
+            if engine_action:
+                self.logger.debug(f"Engine action: {engine_action}")
             self.raw_obs = self.env.step([engine_action] if engine_action else [])[0]
             if self.should_surrender():
                 return self.get_derived_obs(), total_rewards - 1, True, {}
@@ -184,12 +186,16 @@ class PlannedActionEnv(gym.Env):
             self.pending_actions = self.pending_actions[1:]
             return self.action_mapping[action_index]()
         if action_requirement.buildings:
-            self.pending_actions = action_requirement.buildings + self.pending_actions
+            self.pending_actions = [
+                self.building_to_action_mapping[Terran(building)] for building in action_requirement.buildings
+            ] + self.pending_actions
+        if action_requirement.invalid:
+            self.pending_actions = self.pending_actions[1:]
 
         return self.get_idle_action()
 
     def get_idle_action(self):
-        self.cancel_cc_rally() or self.send_idle_worker_to_work() or self.lower_supply_depots()
+        return self.cancel_cc_rally() or self.send_idle_worker_to_work() or self.lower_supply_depots()
 
     def send_idle_worker_to_work(self):
         idle_scvs = list(filter(lambda u: u[FeatureUnit.order_length] == 0, self.get_units(Terran.SCV, alliance=1)))
@@ -282,7 +288,7 @@ class PlannedActionEnv(gym.Env):
             action_requirement.buildings.append(Terran.SupplyDepot)
         if player[Player.minerals] < 50:
             action_requirement.resources = True
-        if self.get_units(Terran.Barracks, alliance=1) == 0:
+        if len(self.get_units(Terran.Barracks, alliance=1)) == 0:
             action_requirement.buildings.append(Terran.Barracks)
         if self.get_free_building(Terran.Barracks) is None:
             action_requirement.queue = True
