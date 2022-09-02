@@ -25,6 +25,7 @@ class ActionIndex(IntEnum):
     STOP_ARMY = 5
     RETREAT = 6
     GATHER_ARMY = 7
+    BUILD_CC = 8
 
     @staticmethod
     def int_to_name(value: int):
@@ -51,6 +52,8 @@ class ObservationIndex(IntEnum):
     SCV_IN_PROGRESS = 14
     MARINES_IN_PROGRESS = 15
     MILITARY_COUNT = 16     # scale 100
+    CC_STARTED_BUILDING = 17
+    CC_BUILT = 18
 
 
 class BuildMarinesEnv(gym.Env):
@@ -73,7 +76,7 @@ class BuildMarinesEnv(gym.Env):
     army_actions = {ActionIndex.ATTACK, ActionIndex.RETREAT, ActionIndex.STOP_ARMY, ActionIndex.GATHER_ARMY}
 
     def __init__(self, step_mul: int = 8, realtime: bool = False, is_discrete: bool = True,
-                 supple_depot_limit: Optional[int] = None, scv_limit: Optional[int] = 25,
+                 supple_depot_limit: Optional[int] = None,
                  difficulty: Difficulty = Difficulty.medium):
         self.settings = {
             'map_name': "Simple64_towers",
@@ -93,7 +96,6 @@ class BuildMarinesEnv(gym.Env):
 
         self.is_discrete = is_discrete
         self.supple_depot_limit = supple_depot_limit
-        self.scv_limit = scv_limit
         self.action_space: Union[Discrete, MultiDiscrete]
         if self.is_discrete:
             self.action_space = Discrete(len(ActionIndex) + 1)
@@ -107,11 +109,12 @@ class BuildMarinesEnv(gym.Env):
 
         self.supply_depot_index = 0
         self.barracks_index = 0
-        self.rallies_set: Set[int] = set()
         self.player_on_left = False
         self.supply_depot_locations = np.zeros(shape=(0, 2))
         self.production_buildings_locations = np.zeros(shape=(0, 2))
         self.enemy_base_location = np.zeros(shape=(2,))
+        self.cc_started = False
+        self.cc_rally_canceled = False
 
         self.action_mapping = {
             ActionIndex.BUILD_MARINE: self.build_marine,
@@ -121,7 +124,8 @@ class BuildMarinesEnv(gym.Env):
             ActionIndex.ATTACK: self.attack,
             ActionIndex.STOP_ARMY: self.stop_army,
             ActionIndex.RETREAT: self.retreat,
-            ActionIndex.GATHER_ARMY: self.gather_army
+            ActionIndex.GATHER_ARMY: self.gather_army,
+            ActionIndex.BUILD_CC: self.build_cc
         }
         self.valid_action_mapping = {
             ActionIndex.BUILD_MARINE: self.can_build_marine,
@@ -131,7 +135,8 @@ class BuildMarinesEnv(gym.Env):
             ActionIndex.ATTACK: self.has_any_military_units,
             ActionIndex.STOP_ARMY: self.has_any_military_units,
             ActionIndex.RETREAT: self.has_any_military_units,
-            ActionIndex.GATHER_ARMY: self.has_any_military_units
+            ActionIndex.GATHER_ARMY: self.has_any_military_units,
+            ActionIndex.BUILD_CC: self.can_build_cc
         }
 
     def init_env(self):
@@ -143,13 +148,14 @@ class BuildMarinesEnv(gym.Env):
 
         self.supply_depot_index = 0
         self.barracks_index = 0
-        self.rallies_set: Set[int] = set()
 
         self.raw_obs = self.env.reset()[0]
         self.player_on_left = self.get_units(Terran.CommandCenter, alliance=1)[0].x < 32
         self.supply_depot_locations = self.get_supply_depot_locations()
         self.production_buildings_locations = self.get_barracks_locations()
         self.enemy_base_location = self.get_enemy_base_location()
+        self.cc_started = False
+        self.cc_rally_canceled = False
 
         return self.get_derived_obs()
 
@@ -161,8 +167,9 @@ class BuildMarinesEnv(gym.Env):
         return derived_obs, self.raw_obs.reward, self.raw_obs.last(), {}
 
     def get_actions(self, action: Union[np.ndarray, int]) -> List:
-        mapped_actions = self.send_idle_workers_to_work()
+        mapped_actions = [self.cancel_cc_rally()]
         mapped_actions.extend(self.process_actions(action))
+        mapped_actions.extend(self.send_idle_workers_to_work())
         mapped_actions.append(self.lower_supply_depots())
 
         mapped_actions = list(filter(lambda x: x is not None, mapped_actions))
@@ -199,22 +206,25 @@ class BuildMarinesEnv(gym.Env):
             return False
         if player[Player.minerals] < 50:
             return False
-        if len(self.get_units(Terran.SCV, alliance=1)) >= self.scv_limit:
+        if len(self.get_units(Terran.SCV, alliance=1)) >= self.cc_max_workers * (1 + self.is_2nd_cc_built()):
             return False
         ccs = self.get_units(Terran.CommandCenter, alliance=1)
         if len(ccs) == 0:
             return False
 
-        cc = ccs[0]
-        if cc[FeatureUnit.order_length] > 0:
+        if all(cc[FeatureUnit.order_length] > 0 for cc in ccs):
             return False
 
         return True
 
     def build_scv(self) -> List:
         if self.can_build_scv():
-            return [actions.RAW_FUNCTIONS.Train_SCV_quick("now",
-                                                          self.get_units(Terran.CommandCenter, alliance=1)[0].tag)]
+            ccs = self.get_units(Terran.CommandCenter, alliance=1)
+            for cc in ccs:
+                if cc[FeatureUnit.order_length] == 0:
+                    return [actions.RAW_FUNCTIONS.Train_SCV_quick("now", cc.tag)]
+            else:
+                self.logger.warning("No free CC to build an scv")
         return []
 
     def can_build_supply_depot(self) -> bool:
@@ -371,7 +381,7 @@ class BuildMarinesEnv(gym.Env):
         obs[ObservationIndex.SUPPLY_TAKEN] = player[Player.food_used] / 200
         obs[ObservationIndex.SUPPLY_ALL] = player[Player.food_cap] / 200
         obs[ObservationIndex.SUPPLY_FREE] = (player[Player.food_cap] - player[Player.food_used]) / 16
-        obs[ObservationIndex.SCV_COUNT] = len(self.get_units(Terran.SCV, alliance=1)) / self.scv_limit
+        obs[ObservationIndex.SCV_COUNT] = len(self.get_units(Terran.SCV, alliance=1)) / 50
         obs[ObservationIndex.TIME_STEP] = self.get_normalized_time()
         obs[ObservationIndex.SUPPLY_DEPOT_COUNT] = self.supply_depot_index / len(self.supply_depot_locations)
         obs[ObservationIndex.IS_SUPPLY_DEPOT_BUILDING] = self.get_supply_depots_in_progress()
@@ -382,8 +392,11 @@ class BuildMarinesEnv(gym.Env):
         obs[ObservationIndex.CAN_BUILD_BARRACKS] = self.can_build_barracks()
         obs[ObservationIndex.CAN_BUILD_SUPPLY_DEPOT] = self.can_build_supply_depot()
         obs[ObservationIndex.SCV_IN_PROGRESS] = self.get_svc_in_progress()
-        obs[ObservationIndex.MARINES_IN_PROGRESS] = self.get_marines_in_progress() / len(self.production_buildings_locations)
+        obs[ObservationIndex.MARINES_IN_PROGRESS] = \
+            self.get_marines_in_progress() / len(self.production_buildings_locations)
         obs[ObservationIndex.MILITARY_COUNT] = player[Player.army_count] / 100
+        obs[ObservationIndex.CC_STARTED_BUILDING] = float(self.cc_started)
+        obs[ObservationIndex.CC_BUILT] = float(self.is_2nd_cc_built())
         return obs
 
     def get_supply_taken(self) -> int:
@@ -567,3 +580,30 @@ class BuildMarinesEnv(gym.Env):
 
     def get_normalized_time(self) -> float:
         return self.raw_obs.observation.game_loop[0] / self.max_game_step
+
+    def is_2nd_cc_built(self) -> bool:
+        ccs = sorted(self.get_units(Terran.CommandCenter, alliance=1), key=lambda c: c[FeatureUnit.x])
+        return len(ccs) == 2 and ccs[1][FeatureUnit.build_progress] == 100
+
+    def can_build_cc(self) -> bool:
+        player = self.raw_obs.observation.player
+        return player.minerals >= 400 and not self.cc_started
+
+    def build_cc(self) -> List:
+        if not self.can_build_cc():
+            return []
+        location = np.array(self.base_locations[1 if self.player_on_left else 2])
+        worker = self.get_nearest_worker(location)
+        if worker is None:
+            self.logger.warning(f"Free worker not found")
+            return []
+        self.cc_started = True
+        return [actions.RAW_FUNCTIONS.Build_CommandCenter_pt("now", worker[FeatureUnit.tag], location)]
+
+    def cancel_cc_rally(self):
+        if self.cc_rally_canceled:
+            return None
+        cc = self.get_units(Terran.CommandCenter, alliance=1)[0]
+        location = (cc[FeatureUnit.x], cc[FeatureUnit.y])
+        self.cc_rally_canceled = True
+        return actions.RAW_FUNCTIONS.Rally_Workers_pt("now", cc[FeatureUnit.tag], location)
