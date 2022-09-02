@@ -5,7 +5,7 @@ import gym
 import numpy as np
 from gym.spaces import Discrete
 
-from minigames.simple_map.src.build_marines_env import BuildMarinesEnv, ActionIndex
+from minigames.simple_map.src.instant_action_env.build_marines_env import BuildMarinesEnv, ActionIndex
 from wrappers.utils import unwrap_wrapper_or_env
 
 

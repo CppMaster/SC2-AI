@@ -4,7 +4,7 @@ from typing import Optional
 import gym
 import numpy as np
 
-from minigames.simple_map.src.build_marines_env import BuildMarinesEnv
+from minigames.simple_map.src.instant_action_env.build_marines_env import BuildMarinesEnv
 from utils.plot.real_time_plot import RealTimePlot
 from wrappers.utils import unwrap_wrapper_or_env
 
