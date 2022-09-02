@@ -1,5 +1,6 @@
 import logging
 from collections import defaultdict
+from dataclasses import dataclass, field
 from enum import IntEnum
 import random
 from typing import Optional, List, Set, Union
@@ -21,17 +22,12 @@ class ActionIndex(IntEnum):
     BUILD_SCV = 1
     BUILD_SUPPLY = 2
     BUILD_BARRACKS = 3
-    ATTACK = 4
-    STOP_ARMY = 5
-    RETREAT = 6
-    GATHER_ARMY = 7
-    BUILD_CC = 8
-
-    @staticmethod
-    def int_to_name(value: int):
-        if value == len(ActionIndex):
-            return "NO_ACTION"
-        return ActionIndex(value).name
+    BUILD_CC = 4
+    ATTACK = 5
+    STOP_ARMY = 6
+    RETREAT = 7
+    GATHER_ARMY = 8
+    NOTHING = 9
 
 
 class ObservationIndex(IntEnum):
@@ -56,10 +52,21 @@ class ObservationIndex(IntEnum):
     CC_BUILT = 18
 
 
-class BuildMarinesEnv(gym.Env):
+@dataclass
+class ActionRequirement:
+    resources: bool = False
+    buildings: List[int] = field(default_factory=lambda: [])
+    queue: bool = False
+    invalid: bool = False
+
+    @property
+    def can_do_instantly(self) -> bool:
+        return not self.buildings and len(self.buildings) == 0 and not self.queue and not self.invalid
+
+
+class PlannedActionEnv(gym.Env):
 
     metadata = {'render.modes': ['human']}
-
     map_dimensions = (88, 96)
     base_locations = [(26, 35), (57, 31), (23, 72), (54, 68)]
     target_tags_to_ignore = {Zerg.Changeling, Zerg.ChangelingMarine, Zerg.ChangelingMarineShield,
@@ -73,8 +80,7 @@ class BuildMarinesEnv(gym.Env):
     max_game_step = 28800
     army_actions = {ActionIndex.ATTACK, ActionIndex.RETREAT, ActionIndex.STOP_ARMY, ActionIndex.GATHER_ARMY}
 
-    def __init__(self, step_mul: int = 8, realtime: bool = False, is_discrete: bool = True,
-                 supple_depot_limit: Optional[int] = None,
+    def __init__(self, step_mul: int = 8, realtime: bool = False,
                  difficulty: Difficulty = Difficulty.medium):
         self.settings = {
             'map_name': "Simple64_towers",
@@ -91,22 +97,14 @@ class BuildMarinesEnv(gym.Env):
             'realtime': realtime,
             'step_mul': step_mul
         }
-
-        self.is_discrete = is_discrete
-        self.supple_depot_limit = supple_depot_limit
-        self.action_space: Union[Discrete, MultiDiscrete]
-        if self.is_discrete:
-            self.action_space = Discrete(len(ActionIndex) + 1)
-        else:
-            self.action_space = MultiDiscrete([2] * len(ActionIndex))
-
+        self.action_space = Discrete(len(ActionIndex))
         self.observation_space = Box(low=0.0, high=1.0, shape=(len(ObservationIndex),))
         self.env: Optional[SC2Env] = None
-        self.logger = logging.getLogger("BuildMarinesEnv")
+        self.logger = logging.getLogger("PlannedActionEnv")
         self.raw_obs = None
 
         self.supply_depot_index = 0
-        self.barracks_index = 0
+        self.production_building_index = 0
         self.player_on_left = False
         self.supply_depot_locations = np.zeros(shape=(0, 2))
         self.production_buildings_locations = np.zeros(shape=(0, 2))
@@ -123,7 +121,8 @@ class BuildMarinesEnv(gym.Env):
             ActionIndex.STOP_ARMY: self.stop_army,
             ActionIndex.RETREAT: self.retreat,
             ActionIndex.GATHER_ARMY: self.gather_army,
-            ActionIndex.BUILD_CC: self.build_cc
+            ActionIndex.BUILD_CC: self.build_cc,
+            ActionIndex.NOTHING: self.do_nothing
         }
         self.valid_action_mapping = {
             ActionIndex.BUILD_MARINE: self.can_build_marine,
@@ -134,8 +133,15 @@ class BuildMarinesEnv(gym.Env):
             ActionIndex.STOP_ARMY: self.has_any_military_units,
             ActionIndex.RETREAT: self.has_any_military_units,
             ActionIndex.GATHER_ARMY: self.has_any_military_units,
-            ActionIndex.BUILD_CC: self.can_build_cc
+            ActionIndex.BUILD_CC: self.can_build_cc,
+            ActionIndex.NOTHING: self.can_do_nothing
         }
+        self.building_to_action_mapping = {
+            Terran.SupplyDepot: ActionIndex.BUILD_SUPPLY,
+            Terran.Barracks: ActionIndex.BUILD_BARRACKS
+        }
+
+        self.pending_actions: List[ActionIndex] = []
 
     def init_env(self):
         self.env = sc2_env.SC2Env(**self.settings)
@@ -145,7 +151,7 @@ class BuildMarinesEnv(gym.Env):
             self.init_env()
 
         self.supply_depot_index = 0
-        self.barracks_index = 0
+        self.production_building_index = 0
 
         self.raw_obs = self.env.reset()[0]
         self.player_on_left = self.get_units(Terran.CommandCenter, alliance=1)[0].x < 32
@@ -154,124 +160,112 @@ class BuildMarinesEnv(gym.Env):
         self.enemy_base_location = self.get_enemy_base_location()
         self.cc_started = False
         self.cc_rally_canceled = False
+        self.pending_actions: List[ActionIndex] = []
 
         return self.get_derived_obs()
 
-    def step(self, action: Optional[np.ndarray] = None):
-        self.raw_obs = self.env.step(self.get_actions(action))[0]
-        derived_obs = self.get_derived_obs()
-        if self.should_surrender():
-            return derived_obs, -1, True, {}
-        return derived_obs, self.raw_obs.reward, self.raw_obs.last(), {}
+    def step(self, action: int):
+        self.pending_actions.append(ActionIndex(action))
+        total_rewards = 0
+        while len(self.pending_actions) > 0:
+            engine_action = self.get_action()
+            self.raw_obs = self.env.step([engine_action] if engine_action else [])[0]
+            if self.should_surrender():
+                return self.get_derived_obs(), total_rewards - 1, True, {}
+            if self.raw_obs.last():
+                return self.get_derived_obs(), total_rewards + self.raw_obs.reward, True, {}
+            total_rewards += self.raw_obs.reward
+        return self.get_derived_obs(), total_rewards, False, {}
 
-    def get_actions(self, action: Union[np.ndarray, int]) -> List:
-        mapped_actions = [self.cancel_cc_rally()]
-        mapped_actions.extend(self.process_actions(action))
-        mapped_actions.extend(self.send_idle_workers_to_work())
-        mapped_actions.append(self.lower_supply_depots())
+    def get_action(self):
+        action_index = self.pending_actions[0]
+        action_requirement = self.valid_action_mapping[action_index]()
+        if action_requirement.can_do_instantly:
+            self.pending_actions = self.pending_actions[1:]
+            return self.action_mapping[action_index]()
+        if action_requirement.buildings:
+            self.pending_actions = action_requirement.buildings + self.pending_actions
 
-        mapped_actions = list(filter(lambda x: x is not None, mapped_actions))
-        return mapped_actions
+        return self.get_idle_action()
 
-    def process_actions(self, action: Union[np.ndarray, int]) -> List:
-        mapped_actions = []
-        if self.is_discrete:
-            for action_index, action_func in self.action_mapping.items():
-                if action_index == action:
-                    mapped_actions.extend(action_func())
-                    break
-        else:
-            for action_index, action_func in self.action_mapping.items():
-                if action[action_index]:
-                    mapped_actions.extend(action_func())
-        return mapped_actions
+    def get_idle_action(self):
+        self.cancel_cc_rally() or self.send_idle_worker_to_work() or self.lower_supply_depots()
 
-    def send_idle_workers_to_work(self) -> List:
+    def send_idle_worker_to_work(self):
         idle_scvs = list(filter(lambda u: u[FeatureUnit.order_length] == 0, self.get_units(Terran.SCV, alliance=1)))
         working_targets = self.get_working_targets(len(idle_scvs))
-        orders = []
         for s_i, idle_scv in enumerate(idle_scvs):
             if s_i >= len(working_targets):
                 break
-            orders.append(actions.RAW_FUNCTIONS.Harvest_Gather_unit(
+            return actions.RAW_FUNCTIONS.Harvest_Gather_unit(
                 "now", idle_scv[FeatureUnit.tag], working_targets[s_i][FeatureUnit.tag]
-            ))
-        return orders
+            )
+        return None
 
-    def can_build_scv(self) -> bool:
+    def can_build_scv(self) -> ActionRequirement:
         player = self.raw_obs.observation.player
-        if player[Player.food_cap] - player[Player.food_used] < 1:
-            return False
-        if player[Player.minerals] < 50:
-            return False
+        action_requirement = ActionRequirement()
         if len(self.get_units(Terran.SCV, alliance=1)) >= self.cc_max_workers * (1 + self.is_2nd_cc_built()):
-            return False
+            action_requirement.invalid = True
+        if player[Player.food_used] == 200:
+            action_requirement.invalid = True
+        if player[Player.food_cap] - player[Player.food_used] < 1:
+            action_requirement.buildings.append(Terran.SupplyDepot)
+        if player[Player.minerals] < 50:
+            action_requirement.resources = True
         ccs = self.get_units(Terran.CommandCenter, alliance=1)
-        if len(ccs) == 0:
-            return False
-
         if all(cc[FeatureUnit.order_length] > 0 for cc in ccs):
-            return False
+            action_requirement.queue = True
+        return action_requirement
 
-        return True
+    def build_scv(self):
+        ccs = self.get_units(Terran.CommandCenter, alliance=1)
+        for cc in ccs:
+            if cc[FeatureUnit.order_length] == 0:
+                return actions.RAW_FUNCTIONS.Train_SCV_quick("now", cc.tag)
+        else:
+            self.logger.warning("No free CC to build an scv")
+        return None
 
-    def build_scv(self) -> List:
-        if self.can_build_scv():
-            ccs = self.get_units(Terran.CommandCenter, alliance=1)
-            for cc in ccs:
-                if cc[FeatureUnit.order_length] == 0:
-                    return [actions.RAW_FUNCTIONS.Train_SCV_quick("now", cc.tag)]
-            else:
-                self.logger.warning("No free CC to build an scv")
-        return []
-
-    def can_build_supply_depot(self) -> bool:
+    def can_build_supply_depot(self) -> ActionRequirement:
+        action_requirement = ActionRequirement()
         if self.raw_obs.observation.player[Player.minerals] < 100:
-            return False
+            action_requirement.resources = True
         if self.supply_depot_index >= len(self.supply_depot_locations):
-            return False
-        if self.supple_depot_limit is not None and \
-                len(self.get_units({Terran.SupplyDepot, Terran.SupplyDepotLowered}, alliance=1)) \
-                >= self.supple_depot_limit:
-            return False
-        return True
+            action_requirement.invalid = True
+        return action_requirement
 
-    def build_supply_depot(self) -> List:
-        if not self.can_build_supply_depot():
-            return []
-
+    def build_supply_depot(self):
         location = self.supply_depot_locations[self.supply_depot_index]
         worker = self.get_nearest_worker(location)
         if worker is None:
             self.logger.warning(f"Free worker not found")
-            return []
+            return None
 
         self.supply_depot_index += 1
-        return [actions.RAW_FUNCTIONS.Build_SupplyDepot_pt("now", worker[FeatureUnit.tag], location)]
+        return actions.RAW_FUNCTIONS.Build_SupplyDepot_pt("now", worker[FeatureUnit.tag], location)
 
-    def can_build_barracks(self) -> bool:
+    def can_build_barracks(self) -> ActionRequirement:
+        action_requirement = ActionRequirement()
         if self.raw_obs.observation.player[Player.minerals] < 150:
-            return False
-        if self.barracks_index >= len(self.production_buildings_locations):
-            return False
-        return True
+            action_requirement.resources = True
+        if self.production_building_index >= len(self.production_buildings_locations):
+            action_requirement.invalid = True
+        return action_requirement
 
-    def build_barracks(self) -> List:
-        if not self.can_build_barracks():
-            return []
-
-        location = self.production_buildings_locations[self.barracks_index]
+    def build_barracks(self):
+        location = self.production_buildings_locations[self.production_building_index]
         worker = self.get_nearest_worker(location)
         if worker is None:
             self.logger.warning(f"Free worker not found")
             return []
 
-        self.barracks_index += 1
-        return [actions.RAW_FUNCTIONS.Build_Barracks_pt("now", worker[FeatureUnit.tag], location)]
+        self.production_building_index += 1
+        return actions.RAW_FUNCTIONS.Build_Barracks_pt("now", worker[FeatureUnit.tag], location)
 
-    def get_free_barracks(self):
-        barracks = self.get_units(Terran.Barracks, alliance=1)
-        for b in barracks:
+    def get_free_building(self, building: int):
+        buildings = self.get_units(building, alliance=1)
+        for b in buildings:
             if b[FeatureUnit.build_progress] < 100:
                 continue
             if b[FeatureUnit.order_length] > 0:
@@ -279,26 +273,28 @@ class BuildMarinesEnv(gym.Env):
             return b
         return None
 
-    def can_build_marine(self) -> bool:
+    def can_build_marine(self) -> ActionRequirement:
+        action_requirement = ActionRequirement()
         player = self.raw_obs.observation.player
+        if player[Player.food_used] == 200:
+            action_requirement.invalid = True
         if player[Player.food_cap] - player[Player.food_used] < 1:
-            return False
+            action_requirement.buildings.append(Terran.SupplyDepot)
         if player[Player.minerals] < 50:
-            return False
-        if self.get_free_barracks() is None:
-            return False
-        return True
+            action_requirement.resources = True
+        if self.get_units(Terran.Barracks, alliance=1) == 0:
+            action_requirement.buildings.append(Terran.Barracks)
+        if self.get_free_building(Terran.Barracks) is None:
+            action_requirement.queue = True
+        return action_requirement
 
-    def build_marine(self) -> List:
-        if not self.can_build_marine():
-            return []
-
-        barracks = self.get_free_barracks()
+    def build_marine(self):
+        barracks = self.get_free_building(Terran.Barracks)
         if barracks is None:
             self.logger.warning(f"Free barracks not found")
-            return []
+            return None
 
-        return [actions.RAW_FUNCTIONS.Train_Marine_quick("now", barracks.tag)]
+        return actions.RAW_FUNCTIONS.Train_Marine_quick("now", barracks.tag)
 
     def get_random_mineral(self):
         minerals = self.get_units(self.minerals_tags)
@@ -383,12 +379,12 @@ class BuildMarinesEnv(gym.Env):
         obs[ObservationIndex.TIME_STEP] = self.get_normalized_time()
         obs[ObservationIndex.SUPPLY_DEPOT_COUNT] = self.supply_depot_index / len(self.supply_depot_locations)
         obs[ObservationIndex.IS_SUPPLY_DEPOT_BUILDING] = self.get_supply_depots_in_progress()
-        obs[ObservationIndex.BARRACKS_COUNT] = self.barracks_index / len(self.production_buildings_locations)
+        obs[ObservationIndex.BARRACKS_COUNT] = self.production_building_index / len(self.production_buildings_locations)
         obs[ObservationIndex.IS_BARRACKS_BUILDING] = self.get_barracks_in_progress()
-        obs[ObservationIndex.CAN_BUILD_MARINE] = self.can_build_marine()
-        obs[ObservationIndex.CAN_BUILD_SCV] = self.can_build_scv()
-        obs[ObservationIndex.CAN_BUILD_BARRACKS] = self.can_build_barracks()
-        obs[ObservationIndex.CAN_BUILD_SUPPLY_DEPOT] = self.can_build_supply_depot()
+        obs[ObservationIndex.CAN_BUILD_MARINE] = self.can_build_marine().can_do_instantly
+        obs[ObservationIndex.CAN_BUILD_SCV] = self.can_build_scv().can_do_instantly
+        obs[ObservationIndex.CAN_BUILD_BARRACKS] = self.can_build_barracks().can_do_instantly
+        obs[ObservationIndex.CAN_BUILD_SUPPLY_DEPOT] = self.can_build_supply_depot().can_do_instantly
         obs[ObservationIndex.SCV_IN_PROGRESS] = self.get_svc_in_progress()
         obs[ObservationIndex.MARINES_IN_PROGRESS] = \
             self.get_marines_in_progress() / len(self.production_buildings_locations)
@@ -462,8 +458,8 @@ class BuildMarinesEnv(gym.Env):
     def get_military_units(self) -> List:
         return self.get_units({Terran.Marine}, alliance=1)
 
-    def has_any_military_units(self) -> bool:
-        return len(self.get_military_units()) > 0
+    def has_any_military_units(self) -> ActionRequirement:
+        return ActionRequirement(invalid=len(self.get_military_units()) == 0)
 
     def attack_enemy_base_location(self):
         units = self.get_military_units()
@@ -558,14 +554,11 @@ class BuildMarinesEnv(gym.Env):
 
     def action_masks(self) -> np.ndarray:
 
-        if self.is_discrete:
-            self.action_space: Discrete
-            mask = [True] * self.action_space.n
-            for action_index, action_func in self.valid_action_mapping.items():
-                mask[action_index] = action_func()
-            return np.array(mask)
-        else:
-            raise NotImplementedError("Action mask not implemented for non-discrete action space")
+        self.action_space: Discrete
+        mask = [True] * self.action_space.n
+        for action_index, action_func in self.valid_action_mapping.items():
+            mask[action_index] = not action_func().invalid
+        return np.array(mask)
 
     def get_score_cumulative(self):
         return self.raw_obs.observation.score_cumulative
@@ -583,20 +576,22 @@ class BuildMarinesEnv(gym.Env):
         ccs = sorted(self.get_units(Terran.CommandCenter, alliance=1), key=lambda c: c[FeatureUnit.x])
         return len(ccs) == 2 and ccs[1][FeatureUnit.build_progress] == 100
 
-    def can_build_cc(self) -> bool:
-        player = self.raw_obs.observation.player
-        return player.minerals >= 400 and not self.cc_started
+    def can_build_cc(self) -> ActionRequirement:
+        action_requirement = ActionRequirement()
+        if self.raw_obs.observation.player.minerals < 400:
+            action_requirement.resources = True
+        if self.cc_started:
+            action_requirement.invalid = True
+        return action_requirement
 
-    def build_cc(self) -> List:
-        if not self.can_build_cc():
-            return []
+    def build_cc(self):
         location = np.array(self.base_locations[1 if self.player_on_left else 2])
         worker = self.get_nearest_worker(location)
         if worker is None:
             self.logger.warning(f"Free worker not found")
-            return []
+            return None
         self.cc_started = True
-        return [actions.RAW_FUNCTIONS.Build_CommandCenter_pt("now", worker[FeatureUnit.tag], location)]
+        return actions.RAW_FUNCTIONS.Build_CommandCenter_pt("now", worker[FeatureUnit.tag], location)
 
     def cancel_cc_rally(self):
         if self.cc_rally_canceled:
@@ -605,3 +600,9 @@ class BuildMarinesEnv(gym.Env):
         location = (cc[FeatureUnit.x], cc[FeatureUnit.y])
         self.cc_rally_canceled = True
         return actions.RAW_FUNCTIONS.Rally_Workers_pt("now", cc[FeatureUnit.tag], location)
+
+    def can_do_nothing(self) -> ActionRequirement:
+        return ActionRequirement()
+
+    def do_nothing(self):
+        return None
