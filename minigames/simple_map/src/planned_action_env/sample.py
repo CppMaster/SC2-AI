@@ -3,6 +3,7 @@ import random
 import sys
 from absl import flags
 import numpy as np
+from pysc2.env.sc2_env import Difficulty
 
 from stable_baselines3.common.monitor import Monitor
 
@@ -14,7 +15,7 @@ FLAGS(sys.argv)
 
 logging.basicConfig(encoding='utf-8', level=logging.DEBUG)
 
-env = PlannedActionEnv(step_mul=1, realtime=False)
+env = PlannedActionEnv(step_mul=4, realtime=False, difficulty=Difficulty.very_easy)
 monitor_env = Monitor(env)
 
 while True:
@@ -24,6 +25,4 @@ while True:
         action_mask = env.action_masks()
         valid_indices = [idx for idx, mask in enumerate(action_mask) if mask]
         action = random.choice(valid_indices)
-        print(f"Chosen action: {ActionIndex(action).name}")
         obs, rewards, done, info = monitor_env.step(action)
-    print(f"Episode reward: {monitor_env.episode_returns[-1]},\tAverage reward: {np.mean(monitor_env.episode_returns)}")

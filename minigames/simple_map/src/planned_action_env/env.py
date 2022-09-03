@@ -3,7 +3,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from enum import IntEnum
 import random
-from typing import Optional, List, Set, Union
+from typing import Optional, List, Set, Union, Dict
 
 import gym
 import numpy as np
@@ -39,17 +39,11 @@ class ObservationIndex(IntEnum):
     TIME_STEP = 5       # scale 28800
     SUPPLY_DEPOT_COUNT = 6
     IS_SUPPLY_DEPOT_BUILDING = 7
-    BARRACKS_COUNT = 8
+    PRODUCTION_BUILDING_COUNT = 8
     IS_BARRACKS_BUILDING = 9
-    CAN_BUILD_SCV = 10
-    CAN_BUILD_BARRACKS = 11
-    CAN_BUILD_SUPPLY_DEPOT = 12
-    CAN_BUILD_MARINE = 13
-    SCV_IN_PROGRESS = 14
-    MARINES_IN_PROGRESS = 15
-    MILITARY_COUNT = 16     # scale 100
-    CC_STARTED_BUILDING = 17
-    CC_BUILT = 18
+    MILITARY_COUNT = 10     # scale 100
+    CC_STARTED_BUILDING = 11
+    CC_BUILT = 12
 
 
 @dataclass
@@ -62,6 +56,18 @@ class ActionRequirement:
     @property
     def can_do_instantly(self) -> bool:
         return not self.resources and len(self.buildings) == 0 and not self.queue and not self.invalid
+
+    def to_numpy(self) -> np.ndarray:
+        return np.array([self.resources, len(self.buildings), self.queue, self.invalid, self.can_do_instantly])
+
+
+class BuildingTypeState(IntEnum):
+    NOT_PRESENT = 0
+    IS_BUILDING = 1
+    IS_BUILT = 2
+
+    def to_numpy(self) -> np.ndarray:
+        return np.identity(len(self.__class__))[self.value]
 
 
 class PlannedActionEnv(gym.Env):
@@ -79,6 +85,7 @@ class PlannedActionEnv(gym.Env):
     mineral_optimal_workers = 2
     max_game_step = 28800
     army_actions = {ActionIndex.ATTACK, ActionIndex.RETREAT, ActionIndex.STOP_ARMY, ActionIndex.GATHER_ARMY}
+    building_types = [Terran.SupplyDepot, Terran.Barracks]
 
     def __init__(self, step_mul: int = 8, realtime: bool = False,
                  difficulty: Difficulty = Difficulty.medium):
@@ -98,7 +105,10 @@ class PlannedActionEnv(gym.Env):
             'step_mul': step_mul
         }
         self.action_space = Discrete(len(ActionIndex))
-        self.observation_space = Box(low=0.0, high=1.0, shape=(len(ObservationIndex),))
+        self.observation_space = Box(low=0.0, high=1.0, shape=(
+            len(ObservationIndex) + len(ActionIndex) * len(ActionRequirement().to_numpy())
+            + len(self.building_types) * len(BuildingTypeState(0).to_numpy()),
+        ))
         self.env: Optional[SC2Env] = None
         self.logger = logging.getLogger("PlannedActionEnv")
         self.raw_obs = None
@@ -142,6 +152,12 @@ class PlannedActionEnv(gym.Env):
         }
 
         self.pending_actions: List[ActionIndex] = []
+        self.building_states: Dict[Terran, BuildingTypeState] = {}
+        self.action_requirements: Dict[ActionIndex, ActionRequirement] = {}
+        self.last_game_step = 0
+        self.rl_step = 0
+        self.episode_rewards: List[float] = []
+        self.episode_reward = 0.0
 
     def init_env(self):
         self.env = sc2_env.SC2Env(**self.settings)
@@ -161,27 +177,58 @@ class PlannedActionEnv(gym.Env):
         self.cc_started = False
         self.cc_rally_canceled = False
         self.pending_actions: List[ActionIndex] = []
+        self.update_states()
+        self.last_game_step = self.get_game_step()
+        self.rl_step = 0
+        self.episode_reward = 0.0
 
         return self.get_derived_obs()
 
     def step(self, action: int):
-        self.pending_actions.append(ActionIndex(action))
+        game_step = self.get_game_step()
+        self.rl_step += 1
+        self.logger.debug(f"RL step: {self.rl_step},\t"
+                          f"Current game step: {game_step},\t"
+                          f"Delta game step: {game_step - self.last_game_step}")
+        self.last_game_step = game_step
+        action_index = ActionIndex(action)
+        self.logger.debug(f"Chosen action: {action_index.name}")
+        self.pending_actions.append(action_index)
         total_rewards = 0
         while len(self.pending_actions) > 0:
-            engine_action = self.get_action()
+            engine_action = self.normalize_engine_action(self.get_action())
             if engine_action:
                 self.logger.debug(f"Engine action: {engine_action}")
-            self.raw_obs = self.env.step([engine_action] if engine_action else [])[0]
+            self.raw_obs = self.env.step(engine_action)[0]
+            self.update_states()
             if self.should_surrender():
+                self.register_episode_reward(total_rewards - 1)
                 return self.get_derived_obs(), total_rewards - 1, True, {}
             if self.raw_obs.last():
+                self.register_episode_reward(total_rewards + self.raw_obs.reward)
                 return self.get_derived_obs(), total_rewards + self.raw_obs.reward, True, {}
             total_rewards += self.raw_obs.reward
+            self.episode_reward += self.raw_obs.reward
         return self.get_derived_obs(), total_rewards, False, {}
+
+    def update_states(self):
+        self.building_states = self.get_building_type_states()
+        self.action_requirements = self.get_action_requirements()
+
+    def normalize_engine_action(self, engine_action):
+        if engine_action is None:
+            return []
+        if not isinstance(engine_action, list):
+            return [engine_action]
+        return engine_action
 
     def get_action(self):
         action_index = self.pending_actions[0]
-        action_requirement = self.valid_action_mapping[action_index]()
+
+        if self.should_do_finishing_attack() and action_index in self.army_actions:
+            action_index = ActionIndex.ATTACK
+
+        action_requirement = self.action_requirements[action_index]
         if action_requirement.can_do_instantly:
             self.pending_actions = self.pending_actions[1:]
             return self.action_mapping[action_index]()
@@ -195,6 +242,8 @@ class PlannedActionEnv(gym.Env):
         return self.get_idle_action()
 
     def get_idle_action(self):
+        if self.should_do_finishing_attack():
+            return self.attack()
         return self.cancel_cc_rally() or self.send_idle_worker_to_work() or self.lower_supply_depots()
 
     def send_idle_worker_to_work(self):
@@ -257,6 +306,12 @@ class PlannedActionEnv(gym.Env):
             action_requirement.resources = True
         if self.production_building_index >= len(self.production_buildings_locations):
             action_requirement.invalid = True
+        supply_depot_state = self.building_states[Terran.SupplyDepot]
+        if supply_depot_state == BuildingTypeState.NOT_PRESENT:
+            action_requirement.buildings.append(Terran.SupplyDepot)
+        elif supply_depot_state == BuildingTypeState.IS_BUILDING:
+            action_requirement.queue = True
+
         return action_requirement
 
     def build_barracks(self):
@@ -314,7 +369,7 @@ class PlannedActionEnv(gym.Env):
                                  self.get_units(Terran.Refinery, alliance=1)))
         ccs = sorted(list(
             filter(lambda c: c[FeatureUnit.build_progress] == 100, self.get_units(Terran.CommandCenter, alliance=1))
-        ), key=lambda c: c[FeatureUnit.x])
+        ), key=lambda c: c[FeatureUnit.x if self.player_on_left else -FeatureUnit.x])
         cc_to_minerals = defaultdict(list)
         for mineral in minerals:
             for cc_idx, cc in enumerate(ccs):
@@ -385,18 +440,26 @@ class PlannedActionEnv(gym.Env):
         obs[ObservationIndex.TIME_STEP] = self.get_normalized_time()
         obs[ObservationIndex.SUPPLY_DEPOT_COUNT] = self.supply_depot_index / len(self.supply_depot_locations)
         obs[ObservationIndex.IS_SUPPLY_DEPOT_BUILDING] = self.get_supply_depots_in_progress()
-        obs[ObservationIndex.BARRACKS_COUNT] = self.production_building_index / len(self.production_buildings_locations)
+        obs[ObservationIndex.PRODUCTION_BUILDING_COUNT] = \
+            self.production_building_index / len(self.production_buildings_locations)
         obs[ObservationIndex.IS_BARRACKS_BUILDING] = self.get_barracks_in_progress()
-        obs[ObservationIndex.CAN_BUILD_MARINE] = self.can_build_marine().can_do_instantly
-        obs[ObservationIndex.CAN_BUILD_SCV] = self.can_build_scv().can_do_instantly
-        obs[ObservationIndex.CAN_BUILD_BARRACKS] = self.can_build_barracks().can_do_instantly
-        obs[ObservationIndex.CAN_BUILD_SUPPLY_DEPOT] = self.can_build_supply_depot().can_do_instantly
-        obs[ObservationIndex.SCV_IN_PROGRESS] = self.get_svc_in_progress()
-        obs[ObservationIndex.MARINES_IN_PROGRESS] = \
-            self.get_marines_in_progress() / len(self.production_buildings_locations)
         obs[ObservationIndex.MILITARY_COUNT] = player[Player.army_count] / 100
         obs[ObservationIndex.CC_STARTED_BUILDING] = float(self.cc_started)
         obs[ObservationIndex.CC_BUILT] = float(self.is_2nd_cc_built())
+
+        obs_index = len(ObservationIndex)
+        action_req_len = len(ActionRequirement().to_numpy())
+        for action_index in range(len(ActionIndex)):
+            obs[obs_index: obs_index + action_req_len] = \
+                self.action_requirements[ActionIndex(action_index)].to_numpy()
+            obs_index += action_req_len
+
+        building_state_len = len(BuildingTypeState(0).to_numpy())
+        for building_state_index in range(len(self.building_types)):
+            obs[obs_index: obs_index + building_state_len] = \
+                self.building_states[self.building_types[building_state_index]].to_numpy()
+            obs_index += building_state_len
+
         return obs
 
     def get_supply_taken(self) -> int:
@@ -420,12 +483,6 @@ class PlannedActionEnv(gym.Env):
              in self.get_units(Terran.Barracks, alliance=1)]
         )
 
-    def get_svc_in_progress(self) -> bool:
-        ccs = self.get_units(Terran.CommandCenter, alliance=1)
-        if len(ccs) == 0:
-            return False
-        return ccs[0][FeatureUnit.order_length] > 0
-
     def get_marines_in_progress(self) -> int:
         return sum(
             [b[FeatureUnit.order_length] > 0 for b in self.get_units(Terran.Barracks, alliance=1)]
@@ -441,7 +498,7 @@ class PlannedActionEnv(gym.Env):
         side_multiplier = (1 if self.player_on_left else -1)
         start_position = (cc.x + 4 * side_multiplier, cc.y)
         positions = []
-        for x in range(0, 16, 2):
+        for x in range(0, 21, 2):
             for y in range(-5, 6, 5):
                 positions.append([start_position[0] + x * side_multiplier, start_position[1] + y])
         positions = sorted(positions, key=lambda p: (p[0] * side_multiplier, abs(p[1])))
@@ -452,7 +509,7 @@ class PlannedActionEnv(gym.Env):
         side_multiplier = (1 if self.player_on_left else -1)
         start_position = (cc.x - 1 * side_multiplier, cc.y + 2)
         positions = []
-        for x in range(0, 16, 5):
+        for x in range(0, 26, 5):
             for y in range(-10, 6, 5):
                 positions.append([start_position[0] + x * side_multiplier, start_position[1] + y])
         positions = sorted(positions, key=lambda p: (p[0] * side_multiplier, abs(p[1])))
@@ -515,9 +572,9 @@ class PlannedActionEnv(gym.Env):
 
     def get_retreat_position(self) -> np.ndarray:
         if self.player_on_left:
-            return np.array(self.base_locations[0]) + np.array([20., 0.])
+            return np.array(self.base_locations[1]) + np.array([-10., 12.])
         else:
-            return np.array(self.base_locations[-1]) + np.array([-20., 0.])
+            return np.array(self.base_locations[2]) + np.array([10., -12.])
 
     def get_center_of_military_units(self) -> np.ndarray:
         units = self.get_military_units()
@@ -576,7 +633,10 @@ class PlannedActionEnv(gym.Env):
         return len(self.get_units(Terran.CommandCenter, alliance=1)) == 0
 
     def get_normalized_time(self) -> float:
-        return self.raw_obs.observation.game_loop[0] / self.max_game_step
+        return self.get_game_step() / self.max_game_step
+
+    def get_game_step(self) -> int:
+        return self.raw_obs.observation.game_loop[0]
 
     def is_2nd_cc_built(self) -> bool:
         ccs = sorted(self.get_units(Terran.CommandCenter, alliance=1), key=lambda c: c[FeatureUnit.x])
@@ -612,3 +672,31 @@ class PlannedActionEnv(gym.Env):
 
     def do_nothing(self):
         return None
+
+    def get_building_type_states(self) -> Dict[Terran, BuildingTypeState]:
+        states: Dict[Terran, BuildingTypeState] = {}
+        for building_type in self.building_types:
+            alternate_building = {Terran.SupplyDepotLowered} if building_type == Terran.SupplyDepot else set()
+            buildings = self.get_units({building_type} | alternate_building, alliance=1)
+            if len(buildings) == 0:
+                states[building_type] = BuildingTypeState.NOT_PRESENT
+            elif any(building[FeatureUnit.build_progress] == 100 for building in buildings):
+                states[building_type] = BuildingTypeState.IS_BUILT
+            else:
+                states[building_type] = BuildingTypeState.IS_BUILDING
+        return states
+
+    def should_do_finishing_attack(self):
+        return self.get_normalized_time() > 0.8 or self.get_supply_taken() == 200
+
+    def get_action_requirements(self) -> Dict[ActionIndex, ActionRequirement]:
+        return {action_index: able_func() for action_index, able_func in self.valid_action_mapping.items()}
+
+    def register_episode_reward(self, reward: float):
+        self.episode_rewards.append(reward)
+        self.logger.info(f"Episode: {len(self.episode_rewards)}")
+        self.logger.info(f"Episode length: {self.rl_step}")
+        self.logger.info(f"Reward: {reward}")
+        for n_mean in [5, 25, 100]:
+            if len(self.episode_rewards) >= n_mean:
+                self.logger.info(f"Mean last {n_mean} rewards: {np.mean(self.episode_rewards[-n_mean:])}")
