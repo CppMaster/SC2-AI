@@ -1,3 +1,4 @@
+import functools
 import logging
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -15,6 +16,7 @@ from pysc2.lib.features import FeatureUnit, Player
 from pysc2.lib.units import Terran, Neutral, Zerg
 
 from minigames.collect_minerals_and_gas.src.env import OrderId
+from minigames.simple_map.src.planned_action_env.reward_shaper import RewardShaper
 
 
 class ActionIndex(IntEnum):
@@ -87,8 +89,9 @@ class PlannedActionEnv(gym.Env):
     army_actions = {ActionIndex.ATTACK, ActionIndex.RETREAT, ActionIndex.STOP_ARMY, ActionIndex.GATHER_ARMY}
     building_types = [Terran.SupplyDepot, Terran.Barracks]
 
-    def __init__(self, step_mul: int = 8, realtime: bool = False,
-                 difficulty: Difficulty = Difficulty.medium):
+    def __init__(self, step_mul: int = 8, realtime: bool = False, difficulty: Difficulty = Difficulty.medium,
+                 reward_shapers: Optional[List[RewardShaper]] = None,
+                 time_to_finishing_move: float = 0.8, supply_to_finishing_move: int = 200):
         self.settings = {
             'map_name': "Simple64_towers",
             'players': [sc2_env.Agent(sc2_env.Race.terran), sc2_env.Bot(sc2_env.Race.random, difficulty)],
@@ -112,6 +115,11 @@ class PlannedActionEnv(gym.Env):
         self.env: Optional[SC2Env] = None
         self.logger = logging.getLogger("PlannedActionEnv")
         self.raw_obs = None
+        self.reward_shapers: List[RewardShaper] = reward_shapers or []
+        for reward_shaper in self.reward_shapers:
+            reward_shaper.set_env(self)
+        self.time_to_finishing_move = time_to_finishing_move
+        self.supply_to_finishing_move = supply_to_finishing_move
 
         self.supply_depot_index = 0
         self.production_building_index = 0
@@ -181,6 +189,8 @@ class PlannedActionEnv(gym.Env):
         self.last_game_step = self.get_game_step()
         self.rl_step = 0
         self.episode_reward = 0.0
+        for reward_shaper in self.reward_shapers:
+            reward_shaper.reset()
 
         return self.get_derived_obs()
 
@@ -194,22 +204,26 @@ class PlannedActionEnv(gym.Env):
         action_index = ActionIndex(action)
         self.logger.debug(f"Chosen action: {action_index.name}")
         self.pending_actions.append(action_index)
-        total_rewards = 0
+        total_rewards = 0.0
+        shaped_rewards = 0.0
         while len(self.pending_actions) > 0:
             engine_action = self.normalize_engine_action(self.get_action())
             if engine_action:
                 self.logger.debug(f"Engine action: {engine_action}")
             self.raw_obs = self.env.step(engine_action)[0]
             self.update_states()
+            shaped_rewards += self.get_shaped_rewards()
             if self.should_surrender():
                 self.register_episode_reward(total_rewards - 1)
-                return self.get_derived_obs(), total_rewards - 1, True, {}
+                return self.get_derived_obs(), total_rewards - 1 + shaped_rewards, True, {}
             if self.raw_obs.last():
                 self.register_episode_reward(total_rewards + self.raw_obs.reward)
-                return self.get_derived_obs(), total_rewards + self.raw_obs.reward, True, {}
+                return self.get_derived_obs(), total_rewards + self.raw_obs.reward + shaped_rewards, True, {}
             total_rewards += self.raw_obs.reward
             self.episode_reward += self.raw_obs.reward
-        return self.get_derived_obs(), total_rewards, False, {}
+        if self.reward_shapers:
+            self.logger.debug(f"Shaped reward: {shaped_rewards}")
+        return self.get_derived_obs(), total_rewards + shaped_rewards, False, {}
 
     def update_states(self):
         self.building_states = self.get_building_type_states()
@@ -220,6 +234,7 @@ class PlannedActionEnv(gym.Env):
             return []
         if not isinstance(engine_action, list):
             return [engine_action]
+        engine_action = list(filter(lambda x: x is not None, engine_action))
         return engine_action
 
     def get_action(self):
@@ -687,7 +702,8 @@ class PlannedActionEnv(gym.Env):
         return states
 
     def should_do_finishing_attack(self):
-        return self.get_normalized_time() > 0.8 or self.get_supply_taken() == 200
+        return self.get_normalized_time() >= self.time_to_finishing_move or \
+               self.get_supply_taken() >= self.supply_to_finishing_move
 
     def get_action_requirements(self) -> Dict[ActionIndex, ActionRequirement]:
         return {action_index: able_func() for action_index, able_func in self.valid_action_mapping.items()}
@@ -700,3 +716,8 @@ class PlannedActionEnv(gym.Env):
         for n_mean in [5, 25, 100]:
             if len(self.episode_rewards) >= n_mean:
                 self.logger.info(f"Mean last {n_mean} rewards: {np.mean(self.episode_rewards[-n_mean:])}")
+
+    def get_shaped_rewards(self) -> float:
+        return functools.reduce(float.__add__, [
+            reward_shaper.get_shaped_reward() for reward_shaper in self.reward_shapers
+        ], 0.0)
