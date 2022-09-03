@@ -88,6 +88,7 @@ class PlannedActionEnv(gym.Env):
     max_game_step = 28800
     army_actions = {ActionIndex.ATTACK, ActionIndex.RETREAT, ActionIndex.STOP_ARMY, ActionIndex.GATHER_ARMY}
     building_types = [Terran.SupplyDepot, Terran.Barracks]
+    production_building_types = {Terran.Barracks}
 
     def __init__(self, step_mul: int = 8, realtime: bool = False, difficulty: Difficulty = Difficulty.medium,
                  reward_shapers: Optional[List[RewardShaper]] = None,
@@ -484,7 +485,8 @@ class PlannedActionEnv(gym.Env):
         return self.raw_obs.observation.player[Player.food_cap]
 
     def get_expected_supply_cap(self) -> int:
-        return 15 + self.supply_depot_index * 8
+        return len(self.get_units(Terran.CommandCenter, alliance=1)) * 15 \
+               + len(self.get_units({Terran.SupplyDepot, Terran.SupplyDepotLowered}, alliance=1)) * 8
 
     def get_supply_depots_in_progress(self) -> int:
         return sum(
@@ -721,3 +723,8 @@ class PlannedActionEnv(gym.Env):
         return functools.reduce(float.__add__, [
             reward_shaper.get_shaped_reward() for reward_shaper in self.reward_shapers
         ], 0.0)
+
+    def get_production_building_count(self) -> int:
+        buildings = self.get_units(self.production_building_types, alliance=1)
+        return sum(building[FeatureUnit.build_progress] == 100 for building in buildings)
+

@@ -12,17 +12,19 @@ from torch import nn
 
 from minigames.simple_map.src.planned_action_env.env import PlannedActionEnv
 from minigames.simple_map.src.planned_action_env.score_reward_wrapper import ScoreRewardShaper
+from minigames.simple_map.src.planned_action_env.supply_depot_reward_shaper import SupplyDepotRewardShaper
 
 FLAGS = flags.FLAGS
 FLAGS(sys.argv)
 
 logging.basicConfig(encoding='utf-8', level=logging.DEBUG)
 
-suffix = "init_diff-medium_score-reward-shaper_army-bonus-factor-10"
+suffix = "init_diff-medium_score-reward-shaper_army-bonus-factor-10_supply-depot-reward-shaper"
 output_path = f"minigames/simple_map/results/planned_action_logs/{suffix}"
 
 env = PlannedActionEnv(step_mul=2, difficulty=Difficulty.medium, time_to_finishing_move=0.6,
-                       reward_shapers=[ScoreRewardShaper(reward_diff=0.001, kill_factor=1.0, army_bonus_factor=10.0)])
+                       reward_shapers=[ScoreRewardShaper(reward_diff=0.001, kill_factor=1.0, army_bonus_factor=10.0),
+                                       SupplyDepotRewardShaper(reward_diff=0.01, free_supply_margin_factor=2.0)])
 
 model = MaskablePPO(
     "MlpPolicy", env, verbose=1, tensorboard_log=output_path,
