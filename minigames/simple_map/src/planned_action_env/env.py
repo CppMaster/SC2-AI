@@ -167,6 +167,7 @@ class PlannedActionEnv(gym.Env):
         self.rl_step = 0
         self.episode_rewards: List[float] = []
         self.episode_reward = 0.0
+        self.last_action_index: ActionIndex = ActionIndex.NOTHING
 
     def init_env(self):
         self.env = sc2_env.SC2Env(**self.settings)
@@ -192,6 +193,7 @@ class PlannedActionEnv(gym.Env):
         self.episode_reward = 0.0
         for reward_shaper in self.reward_shapers:
             reward_shaper.reset()
+        self.last_action_index: ActionIndex = ActionIndex.NOTHING
 
         return self.get_derived_obs()
 
@@ -202,12 +204,14 @@ class PlannedActionEnv(gym.Env):
                           f"Current game step: {game_step},\t"
                           f"Delta game step: {game_step - self.last_game_step}")
         self.last_game_step = game_step
-        action_index = ActionIndex(action)
-        self.logger.debug(f"Chosen action: {action_index.name}")
-        self.pending_actions.append(action_index)
+        self.last_action_index = ActionIndex(action)
+        self.logger.debug(f"Chosen action: {self.last_action_index.name}")
+        self.pending_actions.append(self.last_action_index)
         total_rewards = 0.0
         shaped_rewards = 0.0
+        internal_steps = 0
         while len(self.pending_actions) > 0:
+            internal_steps += 1
             engine_action = self.normalize_engine_action(self.get_action())
             if engine_action:
                 self.logger.debug(f"Engine action: {engine_action}")
@@ -216,15 +220,16 @@ class PlannedActionEnv(gym.Env):
             shaped_rewards += self.get_shaped_rewards()
             if self.should_surrender():
                 self.register_episode_reward(total_rewards - 1)
-                return self.get_derived_obs(), total_rewards - 1 + shaped_rewards, True, {}
+                return self.get_derived_obs(), (total_rewards - 1 + shaped_rewards) / internal_steps, True, {}
             if self.raw_obs.last():
                 self.register_episode_reward(total_rewards + self.raw_obs.reward)
-                return self.get_derived_obs(), total_rewards + self.raw_obs.reward + shaped_rewards, True, {}
+                return self.get_derived_obs(), \
+                    (total_rewards + self.raw_obs.reward + shaped_rewards) / internal_steps, True, {}
             total_rewards += self.raw_obs.reward
             self.episode_reward += self.raw_obs.reward
         if self.reward_shapers:
-            self.logger.debug(f"Shaped reward: {shaped_rewards}")
-        return self.get_derived_obs(), total_rewards + shaped_rewards, False, {}
+            self.logger.debug(f"Shaped reward: {shaped_rewards / internal_steps}")
+        return self.get_derived_obs(), (total_rewards + shaped_rewards) / internal_steps, False, {}
 
     def update_states(self):
         self.building_states = self.get_building_type_states()
