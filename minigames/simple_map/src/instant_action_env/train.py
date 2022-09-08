@@ -26,21 +26,23 @@ FLAGS(sys.argv)
 
 logging.basicConfig(encoding='utf-8', level=logging.INFO)
 
-suffix = "maskable_stack-obs_build-cc_diff-hard"
-output_path = f"minigames/simple_map/results/logs/{suffix}"
+suffix = "very-hard_finishing-move-05_score-reward-wrapper-1-2-mined-0_action-penalty-02_lr-0004_attack-time-offset-0"
+output_path = f"minigames/simple_map/results/instant_action_logs/{suffix}"
 
-original_env = BuildMarinesEnv(step_mul=4, realtime=False, is_discrete=True, difficulty=Difficulty.hard)
+original_env = BuildMarinesEnv(step_mul=4, realtime=False, is_discrete=True, difficulty=Difficulty.very_hard,
+                               free_supply_margin_factor=1.5,
+                               time_to_finishing_move=[0.50, 0.75], supply_to_finishing_move=[150, 200])
 env = Monitor(original_env)
 env = RewardScaleWrapper(env, scale=100.)
-env = SupplyDepotRewardWrapper(env, reward_diff=0.05, free_supply_margin_factor=1.5)
+# env = SupplyDepotRewardWrapper(env, reward_diff=0.05, free_supply_margin_factor=1.5)
 env.logger.setLevel(logging.DEBUG)
-env = ScoreRewardWrapper(env, reward_diff=0.01, kill_factor=1.0, draw_plot=False)
+env = ScoreRewardWrapper(env, reward_diff=0.1, kill_factor=2.0, draw_plot=False, mined_factor=0.0)
 # env = ReduceActionSpaceWrapper(env, original_env, [ActionIndex.BUILD_CC, ActionIndex.BUILD_SCV])
-env = AttackRewardWrapper(env, reward_diff=1.0, time_offset=0.2, custom_multipliers={
+env = AttackRewardWrapper(env, reward_diff=0.1, time_offset=0.0, custom_multipliers={
     ActionIndex.ATTACK: 1.0, ActionIndex.RETREAT: -1.0, ActionIndex.STOP_ARMY: -0.2, ActionIndex.GATHER_ARMY: 0.5
-}, action_penalty=0.1)
+}, action_penalty=0.2)
 env.logger.setLevel(logging.DEBUG)
-env = CommandCenterRewardWrapper(env, reward_diff=10.0)
+# env = CommandCenterRewardWrapper(env, reward_diff=5.0)
 # env = AddActionAndRewardToObservationWrapper(env, reward_scale=0.01)
 env = StackObservationsActionRewardsWrapper(
     env, reward_scale=0.01,
@@ -55,7 +57,7 @@ env = StackObservationsActionRewardsWrapper(
 model = MaskablePPO(
     "MlpPolicy", env, verbose=1, tensorboard_log=output_path,
     gamma=0.9999, policy_kwargs=dict(activation_fn=nn.LeakyReLU, ortho_init=True),
-    batch_size=64, learning_rate=5e-6, normalize_advantage=True, n_steps=10000
+    batch_size=64, learning_rate=3e-4, normalize_advantage=True, n_steps=10000
 )
 # model = MaskablePPO.load("minigames/simple_map/results/logs/maskable_stack-obs_build-cc/medium-to-medium-hard_ep34.zip", env)
 callback = LogEpisodeCallback(mean_episodes=[5, 25, 100])

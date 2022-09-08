@@ -72,10 +72,12 @@ class BuildMarinesEnv(gym.Env):
     mineral_optimal_workers = 2
     max_game_step = 28800
     army_actions = {ActionIndex.ATTACK, ActionIndex.RETREAT, ActionIndex.STOP_ARMY, ActionIndex.GATHER_ARMY}
+    production_building_types = {Terran.Barracks}
 
     def __init__(self, step_mul: int = 8, realtime: bool = False, is_discrete: bool = True,
                  supple_depot_limit: Optional[int] = None,
-                 difficulty: Difficulty = Difficulty.medium):
+                 difficulty: Difficulty = Difficulty.medium, free_supply_margin_factor: float = 1.5,
+                 time_to_finishing_move: List[float] = [0.25, 0.75], supply_to_finishing_move: List[int] = [150, 200]):
         self.settings = {
             'map_name': "Simple64_towers",
             'players': [sc2_env.Agent(sc2_env.Race.terran), sc2_env.Bot(sc2_env.Race.random, difficulty)],
@@ -94,6 +96,9 @@ class BuildMarinesEnv(gym.Env):
 
         self.is_discrete = is_discrete
         self.supple_depot_limit = supple_depot_limit
+        self.free_supply_margin_factor = free_supply_margin_factor
+        self.time_to_finishing_move = time_to_finishing_move
+        self.supply_to_finishing_move = supply_to_finishing_move
         self.action_space: Union[Discrete, MultiDiscrete]
         if self.is_discrete:
             self.action_space = Discrete(len(ActionIndex) + 1)
@@ -131,9 +136,9 @@ class BuildMarinesEnv(gym.Env):
             ActionIndex.BUILD_SUPPLY: self.can_build_supply_depot,
             ActionIndex.BUILD_BARRACKS: self.can_build_barracks,
             ActionIndex.ATTACK: self.has_any_military_units,
-            ActionIndex.STOP_ARMY: self.has_any_military_units,
-            ActionIndex.RETREAT: self.has_any_military_units,
-            ActionIndex.GATHER_ARMY: self.has_any_military_units,
+            ActionIndex.STOP_ARMY: self.can_do_non_attack_army_action,
+            ActionIndex.RETREAT: self.can_do_non_attack_army_action,
+            ActionIndex.GATHER_ARMY: self.can_do_non_attack_army_action,
             ActionIndex.BUILD_CC: self.can_build_cc
         }
 
@@ -234,6 +239,9 @@ class BuildMarinesEnv(gym.Env):
                 len(self.get_units({Terran.SupplyDepot, Terran.SupplyDepotLowered}, alliance=1)) \
                 >= self.supple_depot_limit:
             return False
+        if self.get_expected_supply_cap() > \
+                self.get_supply_taken() + self.free_supply_margin_factor * (1 + self.get_production_building_count()):
+            return False
         return True
 
     def build_supply_depot(self) -> List:
@@ -253,6 +261,9 @@ class BuildMarinesEnv(gym.Env):
         if self.raw_obs.observation.player[Player.minerals] < 150:
             return False
         if self.barracks_index >= len(self.production_buildings_locations):
+            return False
+        if not any([supply[FeatureUnit.build_progress] == 100 for supply
+                    in self.get_units({Terran.SupplyDepot, Terran.SupplyDepotLowered}, alliance=1)]):
             return False
         return True
 
@@ -404,7 +415,8 @@ class BuildMarinesEnv(gym.Env):
         return self.raw_obs.observation.player[Player.food_cap]
 
     def get_expected_supply_cap(self) -> int:
-        return 15 + self.supply_depot_index * 8
+        return len(self.get_units(Terran.CommandCenter, alliance=1)) * 15 \
+               + len(self.get_units({Terran.SupplyDepot, Terran.SupplyDepotLowered}, alliance=1)) * 8
 
     def get_supply_depots_in_progress(self) -> int:
         return sum(
@@ -605,3 +617,15 @@ class BuildMarinesEnv(gym.Env):
         location = (cc[FeatureUnit.x], cc[FeatureUnit.y])
         self.cc_rally_canceled = True
         return actions.RAW_FUNCTIONS.Rally_Workers_pt("now", cc[FeatureUnit.tag], location)
+
+    def get_production_building_count(self) -> int:
+        buildings = self.get_units(self.production_building_types, alliance=1)
+        return sum(building[FeatureUnit.build_progress] == 100 for building in buildings)
+
+    def should_do_finishing_attack(self):
+        n_cc = len(self.get_units(Terran.CommandCenter, alliance=1))
+        return self.get_normalized_time() >= self.time_to_finishing_move[n_cc - 1] or \
+            self.get_supply_taken() >= self.supply_to_finishing_move[n_cc - 1]
+
+    def can_do_non_attack_army_action(self):
+        return self.has_any_military_units() and not self.should_do_finishing_attack()
