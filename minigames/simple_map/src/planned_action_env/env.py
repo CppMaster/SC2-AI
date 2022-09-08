@@ -15,6 +15,8 @@ from pysc2.lib import features, actions
 from pysc2.lib.features import FeatureUnit, Player
 from pysc2.lib.units import Terran, Neutral, Zerg
 
+from common.building_requirements import get_building_requirement
+from common.unit_cost import unit_to_cost
 from minigames.collect_minerals_and_gas.src.env import OrderId
 from minigames.simple_map.src.planned_action_env.reward_shaper import RewardShaper
 
@@ -48,19 +50,30 @@ class ObservationIndex(IntEnum):
     CC_BUILT = 12
 
 
+supply_limit = 200
+cc_optimal_workers = 16
+cc_max_workers = 24
+refinery_max_workers = 3
+mineral_max_workers = 3
+mineral_optimal_workers = 2
+
+
 @dataclass
 class ActionRequirement:
-    resources: bool = False
+    minerals: bool = False
+    vespene: bool = False
     buildings: List[int] = field(default_factory=lambda: [])
     queue: bool = False
     invalid: bool = False
 
     @property
     def can_do_instantly(self) -> bool:
-        return not self.resources and len(self.buildings) == 0 and not self.queue and not self.invalid
+        return not self.minerals and not self.vespene and len(self.buildings) == 0 and not self.queue \
+               and not self.invalid
 
     def to_numpy(self) -> np.ndarray:
-        return np.array([self.resources, len(self.buildings), self.queue, self.invalid, self.can_do_instantly])
+        return np.array([self.minerals, self.vespene, len(self.buildings), self.queue, self.invalid,
+                         self.can_do_instantly])
 
 
 class BuildingTypeState(IntEnum):
@@ -80,11 +93,7 @@ class PlannedActionEnv(gym.Env):
     target_tags_to_ignore = {Zerg.Changeling, Zerg.ChangelingMarine, Zerg.ChangelingMarineShield,
                              Zerg.ChangelingZergling, Zerg.ChangelingZealot, Zerg.Larva, Zerg.Cocoon}
     minerals_tags = {Neutral.MineralField, Neutral.MineralField450, Neutral.MineralField750}
-    cc_optimal_workers = 16
-    cc_max_workers = 24
-    refinery_max_workers = 3
-    mineral_max_workers = 3
-    mineral_optimal_workers = 2
+
     max_game_step = 28800
     army_actions = {ActionIndex.ATTACK, ActionIndex.RETREAT, ActionIndex.STOP_ARMY, ActionIndex.GATHER_ARMY}
     building_types = [Terran.SupplyDepot, Terran.Barracks]
@@ -279,19 +288,9 @@ class PlannedActionEnv(gym.Env):
         return None
 
     def can_build_scv(self) -> ActionRequirement:
-        player = self.raw_obs.observation.player
-        action_requirement = ActionRequirement()
-        if len(self.get_units(Terran.SCV, alliance=1)) >= self.cc_max_workers * (1 + self.is_2nd_cc_built()):
+        action_requirement = self.get_requirements(Terran.SCV)
+        if len(self.get_units(Terran.SCV, alliance=1)) >= cc_max_workers * (1 + self.is_2nd_cc_built()):
             action_requirement.invalid = True
-        if player[Player.food_used] == 200:
-            action_requirement.invalid = True
-        if player[Player.food_cap] - player[Player.food_used] < 1:
-            action_requirement.buildings.append(Terran.SupplyDepot)
-        if player[Player.minerals] < 50:
-            action_requirement.resources = True
-        ccs = self.get_units(Terran.CommandCenter, alliance=1)
-        if all(cc[FeatureUnit.order_length] > 0 for cc in ccs):
-            action_requirement.queue = True
         return action_requirement
 
     def build_scv(self):
@@ -304,9 +303,7 @@ class PlannedActionEnv(gym.Env):
         return None
 
     def can_build_supply_depot(self) -> ActionRequirement:
-        action_requirement = ActionRequirement()
-        if self.raw_obs.observation.player[Player.minerals] < 100:
-            action_requirement.resources = True
+        action_requirement = self.get_requirements(Terran.SupplyDepot)
         if self.supply_depot_index >= len(self.supply_depot_locations):
             action_requirement.invalid = True
         return action_requirement
@@ -322,17 +319,9 @@ class PlannedActionEnv(gym.Env):
         return actions.RAW_FUNCTIONS.Build_SupplyDepot_pt("now", worker[FeatureUnit.tag], location)
 
     def can_build_barracks(self) -> ActionRequirement:
-        action_requirement = ActionRequirement()
-        if self.raw_obs.observation.player[Player.minerals] < 150:
-            action_requirement.resources = True
+        action_requirement = self.get_requirements(Terran.Barracks)
         if self.production_building_index >= len(self.production_buildings_locations):
             action_requirement.invalid = True
-        supply_depot_state = self.building_states[Terran.SupplyDepot]
-        if supply_depot_state == BuildingTypeState.NOT_PRESENT:
-            action_requirement.buildings.append(Terran.SupplyDepot)
-        elif supply_depot_state == BuildingTypeState.IS_BUILDING:
-            action_requirement.queue = True
-
         return action_requirement
 
     def build_barracks(self):
@@ -345,7 +334,7 @@ class PlannedActionEnv(gym.Env):
         self.production_building_index += 1
         return actions.RAW_FUNCTIONS.Build_Barracks_pt("now", worker[FeatureUnit.tag], location)
 
-    def get_free_building(self, building: int):
+    def get_free_building(self, building: Optional[Union[int, Set[int]]]):
         buildings = self.get_units(building, alliance=1)
         for b in buildings:
             if b[FeatureUnit.build_progress] < 100:
@@ -356,19 +345,7 @@ class PlannedActionEnv(gym.Env):
         return None
 
     def can_build_marine(self) -> ActionRequirement:
-        action_requirement = ActionRequirement()
-        player = self.raw_obs.observation.player
-        if player[Player.food_used] == 200:
-            action_requirement.invalid = True
-        if player[Player.food_cap] - player[Player.food_used] < 1:
-            action_requirement.buildings.append(Terran.SupplyDepot)
-        if player[Player.minerals] < 50:
-            action_requirement.resources = True
-        if len(self.get_units(Terran.Barracks, alliance=1)) == 0:
-            action_requirement.buildings.append(Terran.Barracks)
-        if self.get_free_building(Terran.Barracks) is None:
-            action_requirement.queue = True
-        return action_requirement
+        return self.get_requirements(Terran.Marine)
 
     def build_marine(self):
         barracks = self.get_free_building(Terran.Barracks)
@@ -402,17 +379,17 @@ class PlannedActionEnv(gym.Env):
         worker_targets: List = []
         for w_i in range(n_idle_workers):
             for c_i in range(len(ccs)):
-                if cc_allocations[c_i] < len(cc_to_minerals[c_i]) * self.mineral_optimal_workers:
+                if cc_allocations[c_i] < len(cc_to_minerals[c_i]) * mineral_optimal_workers:
                     cc_allocations[c_i] += 1
                     worker_targets.append(random.choice(cc_to_minerals[c_i]))
                     break
             for r_i in range(len(refineries)):
-                if refinery_allocations[r_i] < self.refinery_max_workers:
+                if refinery_allocations[r_i] < refinery_max_workers:
                     refinery_allocations[r_i] += 1
                     worker_targets.append(refineries[r_i])
                     break
             for c_i in range(len(ccs)):
-                if cc_allocations[c_i] < len(cc_to_minerals[c_i]) * self.mineral_max_workers:
+                if cc_allocations[c_i] < len(cc_to_minerals[c_i]) * mineral_max_workers:
                     cc_allocations[c_i] += 1
                     worker_targets.append(random.choice(cc_to_minerals[c_i]))
                     break
@@ -665,9 +642,7 @@ class PlannedActionEnv(gym.Env):
         return len(ccs) == 2 and ccs[1][FeatureUnit.build_progress] == 100
 
     def can_build_cc(self) -> ActionRequirement:
-        action_requirement = ActionRequirement()
-        if self.raw_obs.observation.player.minerals < 400:
-            action_requirement.resources = True
+        action_requirement = self.get_requirements(Terran.CommandCenter)
         if self.cc_started:
             action_requirement.invalid = True
         return action_requirement
@@ -733,3 +708,32 @@ class PlannedActionEnv(gym.Env):
         buildings = self.get_units(self.production_building_types, alliance=1)
         return sum(building[FeatureUnit.build_progress] == 100 for building in buildings)
 
+    def get_requirements(self, unit_type: Terran) -> ActionRequirement:
+        player = self.raw_obs.observation.player
+        cost = unit_to_cost[unit_type]
+        action_requirement = ActionRequirement()
+
+        if player[Player.food_used] + cost.supply > supply_limit:
+            action_requirement.invalid = True
+        elif player[Player.food_used] + cost.supply > player[Player.food_cap]:
+            action_requirement.buildings.append(Terran.SupplyDepot)
+        if player[Player.minerals] < cost.minerals:
+            action_requirement.minerals = True
+        if player[Player.vespene] < cost.vespene:
+            action_requirement.vespene = True
+
+        building_requirement = get_building_requirement(unit_type)
+        if building_requirement.production:
+            production_building_types = set(building_requirement.production)
+            if len(self.get_units(production_building_types, alliance=1)) == 0:
+                action_requirement.buildings.append(building_requirement.production[0])
+            elif self.get_free_building(production_building_types) is None:
+                action_requirement.queue = True
+
+        for building_type in building_requirement.exists:
+            building_state = self.building_states[Terran(building_type)]
+            if building_state == BuildingTypeState.NOT_PRESENT:
+                action_requirement.buildings.append(building_type)
+            elif building_state == BuildingTypeState.IS_BUILDING:
+                action_requirement.queue = True
+        return action_requirement

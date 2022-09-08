@@ -2,7 +2,7 @@ import logging
 
 from pysc2.lib.units import Terran
 
-from minigames.simple_map.src.planned_action_env.env import ActionIndex
+from minigames.simple_map.src.planned_action_env.env import ActionIndex, cc_optimal_workers, cc_max_workers
 from minigames.simple_map.src.planned_action_env.reward_shaper import RewardShaper
 
 
@@ -25,8 +25,8 @@ class WorkerRewardShaper(RewardShaper):
         reward = 0.0
         if self.env.last_action_index == ActionIndex.BUILD_SCV and self.last_rl_step != self.env.rl_step:
             n_cc = len(self.env.get_units(Terran.CommandCenter, alliance=1))
-            optimal_scv_count = self.env.cc_optimal_workers * n_cc
-            max_scv_count = self.env.cc_max_workers * n_cc
+            optimal_scv_count = cc_optimal_workers * n_cc
+            max_scv_count = cc_max_workers * n_cc
             current_scv_count = len(self.env.get_units(Terran.SCV, alliance=1))
             if current_scv_count < optimal_scv_count:
                 reward = self.optimal_reward

@@ -20,10 +20,10 @@ FLAGS(sys.argv)
 
 logging.basicConfig(encoding='utf-8', level=logging.DEBUG)
 
-suffix = "init_diff-medium_score-reward-shaper_army-bonus-factor-10_supply-depot-reward-shaper_worker-reward-shaper"
+suffix = "trash"
 output_path = f"minigames/simple_map/results/planned_action_logs/{suffix}"
 
-env = PlannedActionEnv(step_mul=2, difficulty=Difficulty.medium, time_to_finishing_move=0.6,
+env = PlannedActionEnv(step_mul=4, difficulty=Difficulty.medium, time_to_finishing_move=0.5,
                        reward_shapers=[ScoreRewardShaper(reward_diff=0.001, kill_factor=1.0, army_bonus_factor=10.0),
                                        SupplyDepotRewardShaper(reward_diff=0.001, free_supply_margin_factor=2.0),
                                        WorkerRewardShaper(reward_diff=0.001, optimal_reward=1.0, suboptimal_reward=0.1,
@@ -32,7 +32,7 @@ env = PlannedActionEnv(step_mul=2, difficulty=Difficulty.medium, time_to_finishi
 model = MaskablePPO(
     "MlpPolicy", env, verbose=1, tensorboard_log=output_path,
     gamma=0.9999, policy_kwargs=dict(activation_fn=nn.LeakyReLU, ortho_init=True),
-    batch_size=64, learning_rate=5e-6, normalize_advantage=True, n_steps=500
+    batch_size=64, learning_rate=3e-4, normalize_advantage=True, n_steps=500
 )
 # model = MaskablePPO.load("minigames/simple_map/results/logs/maskable_stack-obs_build-cc/medium-to-medium-hard_ep34.zip", env)
 
