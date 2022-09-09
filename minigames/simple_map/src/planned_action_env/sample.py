@@ -15,7 +15,8 @@ FLAGS(sys.argv)
 
 logging.basicConfig(encoding='utf-8', level=logging.DEBUG)
 
-env = PlannedActionEnv(step_mul=4, realtime=False, difficulty=Difficulty.very_easy)
+env = PlannedActionEnv(step_mul=4, realtime=False, difficulty=Difficulty.hard, time_to_finishing_move=0.8,
+                       free_supply_margin_factor=1.0)
 monitor_env = Monitor(env)
 
 while True:

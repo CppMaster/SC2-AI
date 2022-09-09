@@ -115,7 +115,8 @@ class PlannedActionEnv(gym.Env):
 
     def __init__(self, step_mul: int = 8, realtime: bool = False, difficulty: Difficulty = Difficulty.medium,
                  reward_shapers: Optional[List[RewardShaper]] = None,
-                 time_to_finishing_move: float = 0.8, supply_to_finishing_move: int = 200):
+                 time_to_finishing_move: float = 0.8, supply_to_finishing_move: int = 200,
+                 free_supply_margin_factor: float = 2.0):
         self.settings = {
             'map_name': "Simple64_towers",
             'players': [sc2_env.Agent(sc2_env.Race.terran), sc2_env.Bot(sc2_env.Race.random, difficulty)],
@@ -144,6 +145,7 @@ class PlannedActionEnv(gym.Env):
             reward_shaper.set_env(self)
         self.time_to_finishing_move = time_to_finishing_move
         self.supply_to_finishing_move = supply_to_finishing_move
+        self.free_supply_margin_factor = free_supply_margin_factor
 
         self.supply_depot_index = 0
         self.production_building_index = 0
@@ -221,6 +223,7 @@ class PlannedActionEnv(gym.Env):
         return self.get_derived_obs()
 
     def step(self, action: int):
+        self.rl_step += 1
         self.last_action_index = ActionIndex(action)
         self.logger.debug(f"Chosen action: {self.last_action_index.name}, pending actions: {self.pending_actions}")
 
@@ -232,7 +235,10 @@ class PlannedActionEnv(gym.Env):
         shaped_rewards = self.get_shaped_rewards()
 
         if self.should_surrender():
+            self.register_episode_reward(-1)
             return self.get_derived_obs(), -1 + shaped_rewards, True, {}
+        if self.raw_obs.last():
+            self.register_episode_reward(self.raw_obs.reward)
         return self.get_derived_obs(), self.raw_obs.reward + shaped_rewards, self.raw_obs.last(), {}
 
     def update_states(self):
@@ -313,6 +319,9 @@ class PlannedActionEnv(gym.Env):
     def can_build_supply_depot(self) -> ActionRequirement:
         action_requirement = self.get_requirements(Terran.SupplyDepot)
         if self.supply_depot_index >= len(self.supply_depot_locations):
+            action_requirement.invalid = True
+        elif not self.building_states[Terran.SupplyDepot].NOT_PRESENT and self.get_expected_supply_cap() > \
+                self.get_supply_taken() + self.free_supply_margin_factor * (1 + self.get_production_building_count()):
             action_requirement.invalid = True
         return action_requirement
 
@@ -697,9 +706,9 @@ class PlannedActionEnv(gym.Env):
 
     def register_episode_reward(self, reward: float):
         self.episode_rewards.append(reward)
-        self.logger.info(f"Episode: {len(self.episode_rewards)}")
-        self.logger.info(f"Episode length: {self.rl_step}")
-        self.logger.info(f"Reward: {reward}")
+        self.logger.info(f"Episode: {len(self.episode_rewards)},\t"
+                         f"Length: {self.rl_step},\t"
+                         f"Reward: {reward}")
         for n_mean in [5, 25, 100]:
             if len(self.episode_rewards) >= n_mean:
                 self.logger.info(f"Mean last {n_mean} rewards: {np.mean(self.episode_rewards[-n_mean:])}")
