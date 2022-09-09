@@ -53,6 +53,7 @@ class ObservationIndex(IntEnum):
     ENEMY_RACE_TERRAN = 13
     ENEMY_RACE_ZERG = 14
     ENEMY_RACE_PROTOSS = 15
+    ENEMY_PROXIMITY = 16
 
 
 supply_limit = 200
@@ -110,7 +111,8 @@ class PlannedActionEnv(gym.Env):
     map_dimensions = (88, 96)
     base_locations = [(26, 35), (57, 31), (23, 72), (54, 68)]
     target_tags_to_ignore = {Zerg.Changeling, Zerg.ChangelingMarine, Zerg.ChangelingMarineShield,
-                             Zerg.ChangelingZergling, Zerg.ChangelingZealot, Zerg.Larva, Zerg.Cocoon}
+                             Zerg.ChangelingZergling, Zerg.ChangelingZealot, Zerg.Larva, Zerg.Cocoon, Zerg.Overseer,
+                             Zerg.Overlord, Zerg.OverlordTransport, Zerg.OverseerCocoon, Zerg.OverseerOversightMode}
     minerals_tags = {Neutral.MineralField, Neutral.MineralField450, Neutral.MineralField750}
 
     max_game_step = 28800
@@ -476,6 +478,7 @@ class PlannedActionEnv(gym.Env):
         obs[ObservationIndex.ENEMY_RACE_TERRAN] = float(self.enemy_race == Race.terran)
         obs[ObservationIndex.ENEMY_RACE_ZERG] = float(self.enemy_race == Race.zerg)
         obs[ObservationIndex.ENEMY_RACE_PROTOSS] = float(self.enemy_race == Race.protoss)
+        obs[ObservationIndex.ENEMY_PROXIMITY] = self.get_enemy_proximity()
 
         obs_index = len(ObservationIndex)
         action_req_len = len(ActionRequirement().to_numpy())
@@ -802,3 +805,20 @@ class PlannedActionEnv(gym.Env):
                     self.logger.warning(f"Unexpected enemy unit type: {unit.unit_type}")
                 if self.enemy_race != Race.random:
                     break
+
+    def get_enemy_proximity(self) -> float:
+        targets = self.get_units(alliance=PlayerRelative.ENEMY)
+        targets = list(filter(lambda t: t.unit_type not in self.target_tags_to_ignore, targets))
+        if len(targets) == 0:
+            return 0.0
+        target_positions = np.array([[t.x, t.y] for t in targets])
+        if self.player_on_left:
+            furthest_position = np.min(target_positions[:, 1])
+            relative_position = (self.base_locations[-1][1] - furthest_position) / \
+                                (self.base_locations[-1][1] - self.base_locations[0][1])
+            return relative_position
+        else:
+            furthest_position = np.max(target_positions[:, 1])
+            relative_position = (furthest_position - self.base_locations[0][1]) / \
+                                (self.base_locations[-1][1] - self.base_locations[0][1])
+            return relative_position
