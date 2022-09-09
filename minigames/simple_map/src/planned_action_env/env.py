@@ -16,7 +16,7 @@ from pysc2.lib.features import FeatureUnit, Player
 from pysc2.lib.units import Terran, Neutral, Zerg
 
 from common.building_requirements import get_building_requirement
-from common.unit_cost import unit_to_cost
+from common.unit_cost import unit_to_cost, Cost
 from minigames.collect_minerals_and_gas.src.env import OrderId
 from minigames.simple_map.src.planned_action_env.reward_shaper import RewardShaper
 
@@ -56,6 +56,20 @@ cc_max_workers = 24
 refinery_max_workers = 3
 mineral_max_workers = 3
 mineral_optimal_workers = 2
+
+
+action_to_unit = {
+    ActionIndex.BUILD_MARINE: Terran.Marine,
+    ActionIndex.BUILD_CC: Terran.CommandCenter,
+    ActionIndex.BUILD_SCV: Terran.SCV,
+    ActionIndex.BUILD_SUPPLY: Terran.SupplyDepot,
+    ActionIndex.BUILD_BARRACKS: Terran.Barracks
+}
+
+
+def get_action_cost(action_index: ActionIndex) -> Cost:
+    unit_type = action_to_unit.get(action_index, -1)
+    return unit_to_cost.get(unit_type, Cost())
 
 
 @dataclass
@@ -207,38 +221,19 @@ class PlannedActionEnv(gym.Env):
         return self.get_derived_obs()
 
     def step(self, action: int):
-        game_step = self.get_game_step()
-        self.rl_step += 1
-        self.logger.debug(f"RL step: {self.rl_step},\t"
-                          f"Current game step: {game_step},\t"
-                          f"Delta game step: {game_step - self.last_game_step}")
-        self.last_game_step = game_step
         self.last_action_index = ActionIndex(action)
-        self.logger.debug(f"Chosen action: {self.last_action_index.name}")
-        self.pending_actions.append(self.last_action_index)
-        total_rewards = 0.0
-        shaped_rewards = 0.0
-        internal_steps = 0
-        while len(self.pending_actions) > 0:
-            internal_steps += 1
-            engine_action = self.normalize_engine_action(self.get_action())
-            if engine_action:
-                self.logger.debug(f"Engine action: {engine_action}")
-            self.raw_obs = self.env.step(engine_action)[0]
-            self.update_states()
-            shaped_rewards += self.get_shaped_rewards()
-            if self.should_surrender():
-                self.register_episode_reward(total_rewards - 1)
-                return self.get_derived_obs(), (total_rewards - 1 + shaped_rewards) / internal_steps, True, {}
-            if self.raw_obs.last():
-                self.register_episode_reward(total_rewards + self.raw_obs.reward)
-                return self.get_derived_obs(), \
-                    (total_rewards + self.raw_obs.reward + shaped_rewards) / internal_steps, True, {}
-            total_rewards += self.raw_obs.reward
-            self.episode_reward += self.raw_obs.reward
-        if self.reward_shapers:
-            self.logger.debug(f"Shaped reward: {shaped_rewards / internal_steps}")
-        return self.get_derived_obs(), (total_rewards + shaped_rewards) / internal_steps, False, {}
+        self.logger.debug(f"Chosen action: {self.last_action_index.name}, pending actions: {self.pending_actions}")
+
+        engine_action = self.get_action() or self.get_idle_action()
+        normalized_engine_action = self.normalize_engine_action(engine_action)
+        self.logger.debug(f"Engine action: {normalized_engine_action}")
+        self.raw_obs = self.env.step(normalized_engine_action)[0]
+        self.update_states()
+        shaped_rewards = self.get_shaped_rewards()
+
+        if self.should_surrender():
+            return self.get_derived_obs(), -1 + shaped_rewards, True, {}
+        return self.get_derived_obs(), self.raw_obs.reward + shaped_rewards, self.raw_obs.last(), {}
 
     def update_states(self):
         self.building_states = self.get_building_type_states()
@@ -253,23 +248,36 @@ class PlannedActionEnv(gym.Env):
         return engine_action
 
     def get_action(self):
-        action_index = self.pending_actions[0]
+        if self.should_do_finishing_attack() and self.last_action_index in self.army_actions:
+            self.last_action_index = ActionIndex.ATTACK
 
-        if self.should_do_finishing_attack() and action_index in self.army_actions:
-            action_index = ActionIndex.ATTACK
+        action_requirement = self.action_requirements[self.last_action_index]
 
-        action_requirement = self.action_requirements[action_index]
+        if self.pending_actions:
+            pending_action = self.pending_actions[0]
+            pending_action_requirement = self.action_requirements[pending_action]
+            if pending_action_requirement.can_do_instantly:
+                self.pending_actions = self.pending_actions[1:]
+                return self.action_mapping[pending_action]()
+            if pending_action_requirement.invalid:
+                self.pending_actions = self.pending_actions[1:]
+            elif pending_action_requirement.buildings:
+                self.pending_actions = [
+                    self.building_to_action_mapping[Terran(building)]
+                    for building in pending_action_requirement.buildings
+                ] + self.pending_actions
+
         if action_requirement.can_do_instantly:
-            self.pending_actions = self.pending_actions[1:]
-            return self.action_mapping[action_index]()
-        if action_requirement.buildings:
-            self.pending_actions = [
-                self.building_to_action_mapping[Terran(building)] for building in action_requirement.buildings
-            ] + self.pending_actions
-        if action_requirement.invalid:
-            self.pending_actions = self.pending_actions[1:]
+            return self.action_mapping[self.last_action_index]()
 
-        return self.get_idle_action()
+        if not self.pending_actions:
+            self.pending_actions.append(self.last_action_index)
+            if action_requirement.buildings:
+                self.pending_actions = [
+                    self.building_to_action_mapping[Terran(building)] for building in action_requirement.buildings
+                ] + self.pending_actions
+
+        return None
 
     def get_idle_action(self):
         if self.should_do_finishing_attack():
@@ -487,11 +495,6 @@ class PlannedActionEnv(gym.Env):
             [b[FeatureUnit.order_length] > 0 for b in self.get_units(Terran.Barracks, alliance=1)]
         )
 
-    def get_spots_to_build(self) -> np.ndarray:
-        minimap_features = self.raw_obs.observation.feature_minimap
-        spots = np.array(minimap_features.buildable - minimap_features.player_relative.astype(bool))
-        return spots
-
     def get_supply_depot_locations(self) -> np.ndarray:
         cc = self.get_units(Terran.CommandCenter, alliance=1)[0]
         side_multiplier = (1 if self.player_on_left else -1)
@@ -619,7 +622,9 @@ class PlannedActionEnv(gym.Env):
         self.action_space: Discrete
         mask = [True] * self.action_space.n
         for action_index, action_func in self.valid_action_mapping.items():
-            mask[action_index] = not action_func().invalid
+            action_requirement = action_func()
+            mask[action_index] = action_requirement.can_do_instantly if self.pending_actions \
+                else not action_requirement.invalid
         return np.array(mask)
 
     def get_score_cumulative(self):
@@ -711,6 +716,10 @@ class PlannedActionEnv(gym.Env):
     def get_requirements(self, unit_type: Terran) -> ActionRequirement:
         player = self.raw_obs.observation.player
         cost = unit_to_cost[unit_type]
+        for pending_action in self.pending_actions:
+            if action_to_unit[pending_action] == unit_type:
+                break
+            cost += get_action_cost(pending_action)
         action_requirement = ActionRequirement()
 
         if player[Player.food_used] + cost.supply > supply_limit:
