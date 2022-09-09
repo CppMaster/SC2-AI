@@ -24,14 +24,6 @@ class ScoreRewardShaper(RewardShaper):
         self.last_score = score
         return reward_delta
 
-    def reward(self, reward):
-        score = self.get_summary_score()
-        reward_delta = (score - self.last_score) * self.reward_diff
-        self.logger.debug(f"Score: {score},\tReward delta: {reward_delta}")
-        reward += reward_delta
-        self.last_score = score
-        return reward
-
     def reset(self):
         self.last_score = self.get_summary_score()
 
