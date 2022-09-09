@@ -1,5 +1,7 @@
 import functools
+import json
 import logging
+import os
 from collections import defaultdict
 from dataclasses import dataclass, field
 from enum import IntEnum
@@ -10,10 +12,10 @@ import gym
 import numpy as np
 from gym.spaces import Box, Discrete
 from pysc2.env import sc2_env
-from pysc2.env.sc2_env import SC2Env, Dimensions, Difficulty
+from pysc2.env.sc2_env import SC2Env, Dimensions, Difficulty, Race
 from pysc2.lib import features, actions
-from pysc2.lib.features import FeatureUnit, Player
-from pysc2.lib.units import Terran, Neutral, Zerg
+from pysc2.lib.features import FeatureUnit, Player, PlayerRelative
+from pysc2.lib.units import Terran, Neutral, Zerg, Protoss
 
 from common.building_requirements import get_building_requirement
 from common.unit_cost import unit_to_cost, Cost
@@ -48,6 +50,9 @@ class ObservationIndex(IntEnum):
     MILITARY_COUNT = 10     # scale 100
     CC_STARTED_BUILDING = 11
     CC_BUILT = 12
+    ENEMY_RACE_TERRAN = 13
+    ENEMY_RACE_ZERG = 14
+    ENEMY_RACE_PROTOSS = 15
 
 
 supply_limit = 200
@@ -116,7 +121,7 @@ class PlannedActionEnv(gym.Env):
     def __init__(self, step_mul: int = 8, realtime: bool = False, difficulty: Difficulty = Difficulty.medium,
                  reward_shapers: Optional[List[RewardShaper]] = None,
                  time_to_finishing_move: float = 0.8, supply_to_finishing_move: int = 200,
-                 free_supply_margin_factor: float = 2.0):
+                 free_supply_margin_factor: float = 2.0, output_path: Optional[str] = None):
         self.settings = {
             'map_name': "Simple64_towers",
             'players': [sc2_env.Agent(sc2_env.Race.terran), sc2_env.Bot(sc2_env.Race.random, difficulty)],
@@ -146,6 +151,7 @@ class PlannedActionEnv(gym.Env):
         self.time_to_finishing_move = time_to_finishing_move
         self.supply_to_finishing_move = supply_to_finishing_move
         self.free_supply_margin_factor = free_supply_margin_factor
+        self.output_path = output_path
 
         self.supply_depot_index = 0
         self.production_building_index = 0
@@ -193,6 +199,7 @@ class PlannedActionEnv(gym.Env):
         self.episode_rewards: List[float] = []
         self.episode_reward = 0.0
         self.last_action_index: ActionIndex = ActionIndex.NOTHING
+        self.enemy_race = Race.random
 
     def init_env(self):
         self.env = sc2_env.SC2Env(**self.settings)
@@ -205,7 +212,7 @@ class PlannedActionEnv(gym.Env):
         self.production_building_index = 0
 
         self.raw_obs = self.env.reset()[0]
-        self.player_on_left = self.get_units(Terran.CommandCenter, alliance=1)[0].x < 32
+        self.player_on_left = self.get_units(Terran.CommandCenter, alliance=PlayerRelative.SELF)[0].x < 32
         self.supply_depot_locations = self.get_supply_depot_locations()
         self.production_buildings_locations = self.get_barracks_locations()
         self.enemy_base_location = self.get_enemy_base_location()
@@ -219,6 +226,7 @@ class PlannedActionEnv(gym.Env):
         for reward_shaper in self.reward_shapers:
             reward_shaper.reset()
         self.last_action_index: ActionIndex = ActionIndex.NOTHING
+        self.enemy_race = Race.random
 
         return self.get_derived_obs()
 
@@ -244,6 +252,7 @@ class PlannedActionEnv(gym.Env):
     def update_states(self):
         self.building_states = self.get_building_type_states()
         self.action_requirements = self.get_action_requirements()
+        self.update_enemy_race()
 
     def normalize_engine_action(self, engine_action):
         if engine_action is None:
@@ -291,7 +300,8 @@ class PlannedActionEnv(gym.Env):
         return self.cancel_cc_rally() or self.send_idle_worker_to_work() or self.lower_supply_depots()
 
     def send_idle_worker_to_work(self):
-        idle_scvs = list(filter(lambda u: u[FeatureUnit.order_length] == 0, self.get_units(Terran.SCV, alliance=1)))
+        idle_scvs = list(filter(lambda u: u[FeatureUnit.order_length] == 0,
+                                self.get_units(Terran.SCV, alliance=PlayerRelative.SELF)))
         working_targets = self.get_working_targets(len(idle_scvs))
         for s_i, idle_scv in enumerate(idle_scvs):
             if s_i >= len(working_targets):
@@ -303,12 +313,13 @@ class PlannedActionEnv(gym.Env):
 
     def can_build_scv(self) -> ActionRequirement:
         action_requirement = self.get_requirements(Terran.SCV)
-        if len(self.get_units(Terran.SCV, alliance=1)) >= cc_max_workers * (1 + self.is_2nd_cc_built()):
+        if len(self.get_units(Terran.SCV, alliance=PlayerRelative.SELF)) \
+                >= cc_max_workers * (1 + self.is_2nd_cc_built()):
             action_requirement.invalid = True
         return action_requirement
 
     def build_scv(self):
-        ccs = self.get_units(Terran.CommandCenter, alliance=1)
+        ccs = self.get_units(Terran.CommandCenter, alliance=PlayerRelative.SELF)
         for cc in ccs:
             if cc[FeatureUnit.order_length] == 0:
                 return actions.RAW_FUNCTIONS.Train_SCV_quick("now", cc.tag)
@@ -352,7 +363,7 @@ class PlannedActionEnv(gym.Env):
         return actions.RAW_FUNCTIONS.Build_Barracks_pt("now", worker[FeatureUnit.tag], location)
 
     def get_free_building(self, building: Optional[Union[int, Set[int]]]):
-        buildings = self.get_units(building, alliance=1)
+        buildings = self.get_units(building, alliance=PlayerRelative.SELF)
         for b in buildings:
             if b[FeatureUnit.build_progress] < 100:
                 continue
@@ -381,9 +392,10 @@ class PlannedActionEnv(gym.Env):
     def get_working_targets(self, n_idle_workers: int) -> List:
         minerals = self.get_units(self.minerals_tags)
         refineries = list(filter(lambda r: r[FeatureUnit.build_progress] == 100,
-                                 self.get_units(Terran.Refinery, alliance=1)))
+                                 self.get_units(Terran.Refinery, alliance=PlayerRelative.SELF)))
         ccs = sorted(list(
-            filter(lambda c: c[FeatureUnit.build_progress] == 100, self.get_units(Terran.CommandCenter, alliance=1))
+            filter(lambda c: c[FeatureUnit.build_progress] == 100,
+                   self.get_units(Terran.CommandCenter, alliance=PlayerRelative.SELF))
         ), key=lambda c: c[FeatureUnit.x if self.player_on_left else -FeatureUnit.x])
         cc_to_minerals = defaultdict(list)
         for mineral in minerals:
@@ -413,7 +425,7 @@ class PlannedActionEnv(gym.Env):
         return worker_targets
 
     def get_nearest_worker(self, location: np.ndarray):
-        all_workers = self.get_units(Terran.SCV, alliance=1)
+        all_workers = self.get_units(Terran.SCV, alliance=PlayerRelative.SELF)
         idle_workers = list(filter(lambda u: u[FeatureUnit.order_length] == 0, all_workers))
         worker = self.get_nearest_worker_from_list(location, idle_workers)
         if worker is not None:
@@ -451,7 +463,7 @@ class PlannedActionEnv(gym.Env):
         obs[ObservationIndex.SUPPLY_TAKEN] = player[Player.food_used] / 200
         obs[ObservationIndex.SUPPLY_ALL] = player[Player.food_cap] / 200
         obs[ObservationIndex.SUPPLY_FREE] = (player[Player.food_cap] - player[Player.food_used]) / 16
-        obs[ObservationIndex.SCV_COUNT] = len(self.get_units(Terran.SCV, alliance=1)) / 50
+        obs[ObservationIndex.SCV_COUNT] = len(self.get_units(Terran.SCV, alliance=PlayerRelative.SELF)) / 50
         obs[ObservationIndex.TIME_STEP] = self.get_normalized_time()
         obs[ObservationIndex.SUPPLY_DEPOT_COUNT] = self.supply_depot_index / len(self.supply_depot_locations)
         obs[ObservationIndex.IS_SUPPLY_DEPOT_BUILDING] = self.get_supply_depots_in_progress()
@@ -461,6 +473,9 @@ class PlannedActionEnv(gym.Env):
         obs[ObservationIndex.MILITARY_COUNT] = player[Player.army_count] / 100
         obs[ObservationIndex.CC_STARTED_BUILDING] = float(self.cc_started)
         obs[ObservationIndex.CC_BUILT] = float(self.is_2nd_cc_built())
+        obs[ObservationIndex.ENEMY_RACE_TERRAN] = float(self.enemy_race == Race.terran)
+        obs[ObservationIndex.ENEMY_RACE_ZERG] = float(self.enemy_race == Race.zerg)
+        obs[ObservationIndex.ENEMY_RACE_PROTOSS] = float(self.enemy_race == Race.protoss)
 
         obs_index = len(ObservationIndex)
         action_req_len = len(ActionRequirement().to_numpy())
@@ -484,28 +499,28 @@ class PlannedActionEnv(gym.Env):
         return self.raw_obs.observation.player[Player.food_cap]
 
     def get_expected_supply_cap(self) -> int:
-        return len(self.get_units(Terran.CommandCenter, alliance=1)) * 15 \
-               + len(self.get_units({Terran.SupplyDepot, Terran.SupplyDepotLowered}, alliance=1)) * 8
+        return len(self.get_units(Terran.CommandCenter, alliance=PlayerRelative.SELF)) * 15 \
+               + len(self.get_units({Terran.SupplyDepot, Terran.SupplyDepotLowered}, alliance=PlayerRelative.SELF)) * 8
 
     def get_supply_depots_in_progress(self) -> int:
         return sum(
             [supply_depot[FeatureUnit.build_progress] < 100 for supply_depot
-             in self.get_units(Terran.SupplyDepot, alliance=1)]
+             in self.get_units(Terran.SupplyDepot, alliance=PlayerRelative.SELF)]
         )
 
     def get_barracks_in_progress(self) -> int:
         return sum(
             [supply_depot[FeatureUnit.build_progress] < 100 for supply_depot
-             in self.get_units(Terran.Barracks, alliance=1)]
+             in self.get_units(Terran.Barracks, alliance=PlayerRelative.SELF)]
         )
 
     def get_marines_in_progress(self) -> int:
         return sum(
-            [b[FeatureUnit.order_length] > 0 for b in self.get_units(Terran.Barracks, alliance=1)]
+            [b[FeatureUnit.order_length] > 0 for b in self.get_units(Terran.Barracks, alliance=PlayerRelative.SELF)]
         )
 
     def get_supply_depot_locations(self) -> np.ndarray:
-        cc = self.get_units(Terran.CommandCenter, alliance=1)[0]
+        cc = self.get_units(Terran.CommandCenter, alliance=PlayerRelative.SELF)[0]
         side_multiplier = (1 if self.player_on_left else -1)
         start_position = (cc.x + 4 * side_multiplier, cc.y)
         positions = []
@@ -516,7 +531,7 @@ class PlannedActionEnv(gym.Env):
         return np.array(positions)
 
     def get_barracks_locations(self) -> np.ndarray:
-        cc = self.get_units(Terran.CommandCenter, alliance=1)[0]
+        cc = self.get_units(Terran.CommandCenter, alliance=PlayerRelative.SELF)[0]
         side_multiplier = (1 if self.player_on_left else -1)
         start_position = (cc.x - 1 * side_multiplier, cc.y + 2)
         positions = []
@@ -530,7 +545,7 @@ class PlannedActionEnv(gym.Env):
         return np.array(self.base_locations[-1] if self.player_on_left else self.base_locations[0])
 
     def get_military_units(self) -> List:
-        return self.get_units({Terran.Marine}, alliance=1)
+        return self.get_units({Terran.Marine}, alliance=PlayerRelative.SELF)
 
     def has_any_military_units(self) -> ActionRequirement:
         return ActionRequirement(invalid=len(self.get_military_units()) == 0)
@@ -544,7 +559,7 @@ class PlannedActionEnv(gym.Env):
         return actions.RAW_FUNCTIONS.Attack_pt("now", tags, self.enemy_base_location)
 
     def attack_nearest_target(self) -> List:
-        targets = self.get_units(alliance=4)
+        targets = self.get_units(alliance=PlayerRelative.ENEMY)
         targets = list(filter(lambda t: t.unit_type not in self.target_tags_to_ignore, targets))
         if len(targets) == 0:
             return []
@@ -611,7 +626,7 @@ class PlannedActionEnv(gym.Env):
         return [actions.RAW_FUNCTIONS.Move_pt("now", tags, self.get_retreat_position())]
 
     def lower_supply_depots(self):
-        supply_depots = self.get_units(Terran.SupplyDepot, alliance=1)
+        supply_depots = self.get_units(Terran.SupplyDepot, alliance=PlayerRelative.SELF)
         valid_supply_depots = list(filter(lambda s: s.build_progress == 100 and s.order_length == 0, supply_depots))
         if len(valid_supply_depots) == 0:
             return None
@@ -643,7 +658,7 @@ class PlannedActionEnv(gym.Env):
         return self.raw_obs.observation.score_by_category
 
     def should_surrender(self) -> bool:
-        return len(self.get_units(Terran.CommandCenter, alliance=1)) == 0
+        return len(self.get_units(Terran.CommandCenter, alliance=PlayerRelative.SELF)) == 0
 
     def get_normalized_time(self) -> float:
         return self.get_game_step() / self.max_game_step
@@ -652,7 +667,7 @@ class PlannedActionEnv(gym.Env):
         return self.raw_obs.observation.game_loop[0]
 
     def is_2nd_cc_built(self) -> bool:
-        ccs = sorted(self.get_units(Terran.CommandCenter, alliance=1), key=lambda c: c[FeatureUnit.x])
+        ccs = sorted(self.get_units(Terran.CommandCenter, alliance=PlayerRelative.SELF), key=lambda c: c[FeatureUnit.x])
         return len(ccs) == 2 and ccs[1][FeatureUnit.build_progress] == 100
 
     def can_build_cc(self) -> ActionRequirement:
@@ -673,7 +688,7 @@ class PlannedActionEnv(gym.Env):
     def cancel_cc_rally(self):
         if self.cc_rally_canceled:
             return None
-        cc = self.get_units(Terran.CommandCenter, alliance=1)[0]
+        cc = self.get_units(Terran.CommandCenter, alliance=PlayerRelative.SELF)[0]
         location = (cc[FeatureUnit.x], cc[FeatureUnit.y])
         self.cc_rally_canceled = True
         return actions.RAW_FUNCTIONS.Rally_Workers_pt("now", cc[FeatureUnit.tag], location)
@@ -688,7 +703,7 @@ class PlannedActionEnv(gym.Env):
         states: Dict[Terran, BuildingTypeState] = {}
         for building_type in self.building_types:
             alternate_building = {Terran.SupplyDepotLowered} if building_type == Terran.SupplyDepot else set()
-            buildings = self.get_units({building_type} | alternate_building, alliance=1)
+            buildings = self.get_units({building_type} | alternate_building, alliance=PlayerRelative.SELF)
             if len(buildings) == 0:
                 states[building_type] = BuildingTypeState.NOT_PRESENT
             elif any(building[FeatureUnit.build_progress] == 100 for building in buildings):
@@ -713,13 +728,20 @@ class PlannedActionEnv(gym.Env):
             if len(self.episode_rewards) >= n_mean:
                 self.logger.info(f"Mean last {n_mean} rewards: {np.mean(self.episode_rewards[-n_mean:])}")
 
+        if self.output_path:
+            try:
+                with open(os.path.join(self.output_path, "episode_rewards.json"), "w") as f:
+                    json.dump(self.episode_rewards, f)
+            except Exception as e:
+                self.logger.error(f"Error during saving episode rewards: '{e}'")
+
     def get_shaped_rewards(self) -> float:
         return functools.reduce(float.__add__, [
             reward_shaper.get_shaped_reward() for reward_shaper in self.reward_shapers
         ], 0.0)
 
     def get_production_building_count(self) -> int:
-        buildings = self.get_units(self.production_building_types, alliance=1)
+        buildings = self.get_units(self.production_building_types, alliance=PlayerRelative.SELF)
         return sum(building[FeatureUnit.build_progress] == 100 for building in buildings)
 
     def get_requirements(self, unit_type: Terran) -> ActionRequirement:
@@ -743,7 +765,7 @@ class PlannedActionEnv(gym.Env):
         building_requirement = get_building_requirement(unit_type)
         if building_requirement.production:
             production_building_types = set(building_requirement.production)
-            if len(self.get_units(production_building_types, alliance=1)) == 0:
+            if len(self.get_units(production_building_types, alliance=PlayerRelative.SELF)) == 0:
                 action_requirement.buildings.append(building_requirement.production[0])
             elif self.get_free_building(production_building_types) is None:
                 action_requirement.queue = True
@@ -755,3 +777,28 @@ class PlannedActionEnv(gym.Env):
             elif building_state == BuildingTypeState.IS_BUILDING:
                 action_requirement.queue = True
         return action_requirement
+
+    def update_enemy_race(self):
+        if self.enemy_race != Race.random:
+            return
+
+        for unit in self.raw_obs.observation.raw_units:
+            if unit.alliance == PlayerRelative.ENEMY:
+                for race in (Terran, Zerg, Protoss):
+                    try:
+                        race(unit.unit_type)
+                        if race == Terran:
+                            self.enemy_race = Race.terran
+                        elif race == Zerg:
+                            self.enemy_race = Race.zerg
+                        elif race == Protoss:
+                            self.enemy_race = Race.protoss
+                        else:
+                            self.logger.warning(f"Unexpected enemy unit type: {unit.unit_type}")
+                        break
+                    except ValueError:
+                        pass    # wrong race
+                else:
+                    self.logger.warning(f"Unexpected enemy unit type: {unit.unit_type}")
+                if self.enemy_race != Race.random:
+                    break

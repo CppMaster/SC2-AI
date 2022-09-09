@@ -28,7 +28,7 @@ env = PlannedActionEnv(step_mul=4, difficulty=Difficulty.hard, time_to_finishing
                                                          mined_factor=0.1, economy_factor=0.1),
                                        WorkerRewardShaper(reward_diff=0.01, optimal_reward=1.0, suboptimal_reward=0.1,
                                                           over_max_reward=-1.0)],
-                       free_supply_margin_factor=1.0)
+                       free_supply_margin_factor=1.0, output_path=output_path)
 
 model = MaskablePPO(
     "MlpPolicy", env, verbose=1, tensorboard_log=output_path,
