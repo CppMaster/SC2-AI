@@ -12,7 +12,7 @@ class Agent(BaseAgent):
 class RandomAgent(Agent):
     def step(self, obs):
         super(RandomAgent, self).step(obs)
-        unit = obs.observation.raw_units[0]
+        unit = next(iter([unit for unit in obs.observation.raw_units if unit.alliance == 1]))
         return actions.RAW_FUNCTIONS.Move_pt("now", unit.tag, (random.randint(0, 64), random.randint(0, 64)))
 
 
@@ -33,8 +33,7 @@ if __name__ == "__main__":
                     raw_resolution=64,
                 ),
                 step_mul=8,
-                realtime=False,
-                disable_fog=True,
+                realtime=False
         ) as env:
             run_loop.run_loop([agent], env, max_episodes=1000)
     except KeyboardInterrupt:
