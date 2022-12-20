@@ -121,12 +121,13 @@ class PlannedActionEnv(gym.Env):
     production_building_types = {Terran.Barracks}
 
     def __init__(self, step_mul: int = 8, realtime: bool = False, difficulty: Difficulty = Difficulty.medium,
+                 enemy_race: sc2_env.Race = sc2_env.Race.random,
                  reward_shapers: Optional[List[RewardShaper]] = None,
                  time_to_finishing_move: float = 0.8, supply_to_finishing_move: int = 200,
                  free_supply_margin_factor: float = 2.0, output_path: Optional[str] = None):
         self.settings = {
             'map_name': "Simple64_towers",
-            'players': [sc2_env.Agent(sc2_env.Race.terran), sc2_env.Bot(sc2_env.Race.random, difficulty)],
+            'players': [sc2_env.Agent(sc2_env.Race.terran), sc2_env.Bot(enemy_race, difficulty)],
             'agent_interface_format': features.AgentInterfaceFormat(
                 action_space=actions.ActionSpace.RAW,
                 use_raw_units=True,
@@ -558,6 +559,7 @@ class PlannedActionEnv(gym.Env):
         if len(units) == 0:
             return None
         tags = [u.tag for u in units]
+        self.logger.debug(f"Attack enemy base location: {self.enemy_base_location}")
         self.logger.debug(f"Attack enemy base location: {self.enemy_base_location}")
         return actions.RAW_FUNCTIONS.Attack_pt("now", tags, self.enemy_base_location)
 

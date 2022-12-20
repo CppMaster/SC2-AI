@@ -1,9 +1,12 @@
 import logging
 import sys
+from typing import List
+
 from absl import flags
+import time
 
 import numpy as np
-from pysc2.env.sc2_env import Difficulty
+from pysc2.env.sc2_env import Difficulty, Race
 from sb3_contrib import MaskablePPO
 
 from minigames.simple_map.src.planned_action_env.env import PlannedActionEnv
@@ -20,7 +23,8 @@ logging.basicConfig(encoding='utf-8', level=logging.DEBUG)
 suffix = "more-observation_finishing-move-07"
 output_path = f"minigames/simple_map/results/planned_action_logs/{suffix}"
 
-env = PlannedActionEnv(step_mul=4, difficulty=Difficulty.hard, time_to_finishing_move=0.7,
+env = PlannedActionEnv(step_mul=4, difficulty=Difficulty.very_hard, enemy_race=Race.terran,
+                       time_to_finishing_move=0.7,
                        reward_shapers=[ScoreRewardShaper(reward_diff=0.001, kill_factor=1.0, army_factor=1.0,
                                                          mined_factor=0.1, economy_factor=0.1),
                                        WorkerRewardShaper(reward_diff=0.001, optimal_reward=1.0, suboptimal_reward=0.1,
