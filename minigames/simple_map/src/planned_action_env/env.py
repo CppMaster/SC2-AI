@@ -110,6 +110,10 @@ class PlannedActionEnv(gym.Env):
     metadata = {'render.modes': ['human']}
     map_dimensions = (88, 96)
     base_locations = [(26, 35), (57, 31), (23, 72), (54, 68)]
+    attack_locations = [
+        [(50, 45), (38, 48), (27, 49), (23, 58), (23, 72), (54, 68)],
+        [(30, 58), (42, 55), (53, 54), (57, 45), (57, 31), (26, 35)]
+    ]
     target_tags_to_ignore = {Zerg.Changeling, Zerg.ChangelingMarine, Zerg.ChangelingMarineShield,
                              Zerg.ChangelingZergling, Zerg.ChangelingZealot, Zerg.Larva, Zerg.Cocoon, Zerg.Overseer,
                              Zerg.Overlord, Zerg.OverlordTransport, Zerg.OverseerCocoon, Zerg.OverseerOversightMode}
@@ -203,6 +207,8 @@ class PlannedActionEnv(gym.Env):
         self.episode_reward = 0.0
         self.last_action_index: ActionIndex = ActionIndex.NOTHING
         self.enemy_race = Race.random
+        self.reached_enemy_main = False
+        self.override_chosen_action: Optional[ActionIndex] = None
 
     def init_env(self):
         self.env = sc2_env.SC2Env(**self.settings)
@@ -230,12 +236,17 @@ class PlannedActionEnv(gym.Env):
             reward_shaper.reset()
         self.last_action_index: ActionIndex = ActionIndex.NOTHING
         self.enemy_race = Race.random
+        self.reached_enemy_main = False
+        self.override_chosen_action = None
 
         return self.get_derived_obs()
 
     def step(self, action: int):
         self.rl_step += 1
         self.last_action_index = ActionIndex(action)
+        if self.override_chosen_action is not None \
+                and not self.valid_action_mapping[self.override_chosen_action]().invalid:
+            self.last_action_index = self.override_chosen_action
         self.logger.debug(f"Chosen action: {self.last_action_index.name}, pending actions: {self.pending_actions}")
 
         engine_action = self.get_action() or self.get_idle_action()
@@ -563,6 +574,37 @@ class PlannedActionEnv(gym.Env):
         self.logger.debug(f"Attack enemy base location: {self.enemy_base_location}")
         return actions.RAW_FUNCTIONS.Attack_pt("now", tags, self.enemy_base_location)
 
+    def attack_on_path(self):
+        units = self.get_military_units()
+        if len(units) == 0:
+            return []
+
+        path_points = self.attack_locations[1 - int(self.player_on_left)]
+        unit_positions = np.array([[u.x, u.y] for u in units])
+        target_positions = np.array([[t[0], t[1]] for t in path_points])
+
+        distances = np.zeros(shape=(len(unit_positions), len(target_positions)))
+        for u_idx, u_pos in enumerate(unit_positions):
+            for t_idx, t_pos in enumerate(target_positions):
+                distances[u_idx, t_idx] = np.sum(np.power(u_pos - t_pos, 2))
+        unit_to_target_mapping = distances.argmin(axis=1)
+        target_to_units = defaultdict(set)
+        for u_idx, t_dx in enumerate(unit_to_target_mapping):
+            target_to_units[t_dx].add(u_idx)
+
+        attack_list = []
+        for t_dx, unit_indices in target_to_units.items():
+            attack_target_index = t_dx
+            if t_dx + 1 < len(path_points):
+                attack_target_index += 1
+            else:
+                self.reached_enemy_main = True
+            target_location = np.array(path_points[attack_target_index])
+            tags = [u.tag for u_idx, u in enumerate(units) if u_idx in unit_indices]
+            attack_list.append(actions.RAW_FUNCTIONS.Attack_pt("now", tags, target_location))
+            self.logger.debug(f"Attack nearest target: {target_location}, tags: {tags}")
+        return attack_list
+
     def attack_nearest_target(self) -> List:
         targets = self.get_units(alliance=PlayerRelative.ENEMY)
         targets = list(filter(lambda t: t.unit_type not in self.target_tags_to_ignore, targets))
@@ -592,6 +634,8 @@ class PlannedActionEnv(gym.Env):
         return attack_list
 
     def attack(self) -> List:
+        if not self.reached_enemy_main:
+            return self.attack_on_path()
         return self.attack_nearest_target() or [self.attack_enemy_base_location()]
 
     def stop_army(self) -> List:
