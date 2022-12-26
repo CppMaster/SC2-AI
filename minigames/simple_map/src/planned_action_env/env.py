@@ -35,6 +35,7 @@ class ActionIndex(IntEnum):
     RETREAT = 7
     GATHER_ARMY = 8
     NOTHING = 9
+    BUILD_REFINERY = 10
 
 
 class ObservationIndex(IntEnum):
@@ -55,6 +56,8 @@ class ObservationIndex(IntEnum):
     ENEMY_RACE_ZERG = 14
     ENEMY_RACE_PROTOSS = 15
     ENEMY_PROXIMITY = 16
+    REFINERY_COUNT = 17     # scale max_refinery
+    IS_REFINERY_BUILDING = 18
 
 
 supply_limit = 200
@@ -70,7 +73,8 @@ action_to_unit = {
     ActionIndex.BUILD_CC: Terran.CommandCenter,
     ActionIndex.BUILD_SCV: Terran.SCV,
     ActionIndex.BUILD_SUPPLY: Terran.SupplyDepot,
-    ActionIndex.BUILD_BARRACKS: Terran.Barracks
+    ActionIndex.BUILD_BARRACKS: Terran.Barracks,
+    ActionIndex.BUILD_REFINERY: Terran.Refinery
 }
 
 
@@ -130,7 +134,8 @@ class PlannedActionEnv(gym.Env):
                  reward_shapers: Optional[List[RewardShaper]] = None,
                  time_to_finishing_move: float = 0.8, supply_to_finishing_move: int = 200,
                  free_supply_margin_factor: float = 2.0, output_path: Optional[str] = None,
-                 difficulty_scheduler: Optional[DifficultyScheduler] = None):
+                 difficulty_scheduler: Optional[DifficultyScheduler] = None,
+                 max_refineries: int = 2):
         self.settings = {
             'map_name': "Simple64_towers",
             'players': [sc2_env.Agent(sc2_env.Race.terran), sc2_env.Bot(enemy_race, difficulty)],
@@ -181,7 +186,8 @@ class PlannedActionEnv(gym.Env):
             ActionIndex.RETREAT: self.retreat,
             ActionIndex.GATHER_ARMY: self.gather_army,
             ActionIndex.BUILD_CC: self.build_cc,
-            ActionIndex.NOTHING: self.do_nothing
+            ActionIndex.NOTHING: self.do_nothing,
+            ActionIndex.BUILD_REFINERY: self.build_refinery
         }
         self.valid_action_mapping = {
             ActionIndex.BUILD_MARINE: self.can_build_marine,
@@ -193,11 +199,13 @@ class PlannedActionEnv(gym.Env):
             ActionIndex.RETREAT: self.has_any_military_units,
             ActionIndex.GATHER_ARMY: self.has_any_military_units,
             ActionIndex.BUILD_CC: self.can_build_cc,
-            ActionIndex.NOTHING: self.can_do_nothing
+            ActionIndex.NOTHING: self.can_do_nothing,
+            ActionIndex.BUILD_REFINERY: self.can_build_refinery
         }
         self.building_to_action_mapping = {
             Terran.SupplyDepot: ActionIndex.BUILD_SUPPLY,
-            Terran.Barracks: ActionIndex.BUILD_BARRACKS
+            Terran.Barracks: ActionIndex.BUILD_BARRACKS,
+            Terran.Refinery: ActionIndex.BUILD_REFINERY
         }
 
         self.pending_actions: List[ActionIndex] = []
@@ -215,6 +223,9 @@ class PlannedActionEnv(gym.Env):
         if self.difficulty_scheduler:
             self.difficulty_scheduler.current_difficulty = difficulty
         self.finishing_move_triggered = False
+        self.max_refineries = max_refineries
+        self.refinery_index = 0
+        self.geysers = []
 
     def init_env(self):
         self.env = sc2_env.SC2Env(**self.settings)
@@ -245,6 +256,8 @@ class PlannedActionEnv(gym.Env):
         self.reached_enemy_main = False
         self.override_chosen_action = None
         self.finishing_move_triggered = False
+        self.refinery_index = 0
+        self.geysers = self.get_geysers()
 
         return self.get_derived_obs()
 
@@ -429,15 +442,15 @@ class PlannedActionEnv(gym.Env):
         refinery_allocations = [r[FeatureUnit.assigned_harvesters] for r in refineries]
         worker_targets: List = []
         for w_i in range(n_idle_workers):
-            for c_i in range(len(ccs)):
-                if cc_allocations[c_i] < len(cc_to_minerals[c_i]) * mineral_optimal_workers:
-                    cc_allocations[c_i] += 1
-                    worker_targets.append(random.choice(cc_to_minerals[c_i]))
-                    break
             for r_i in range(len(refineries)):
                 if refinery_allocations[r_i] < refinery_max_workers:
                     refinery_allocations[r_i] += 1
                     worker_targets.append(refineries[r_i])
+                    break
+            for c_i in range(len(ccs)):
+                if cc_allocations[c_i] < len(cc_to_minerals[c_i]) * mineral_optimal_workers:
+                    cc_allocations[c_i] += 1
+                    worker_targets.append(random.choice(cc_to_minerals[c_i]))
                     break
             for c_i in range(len(ccs)):
                 if cc_allocations[c_i] < len(cc_to_minerals[c_i]) * mineral_max_workers:
@@ -499,6 +512,10 @@ class PlannedActionEnv(gym.Env):
         obs[ObservationIndex.ENEMY_RACE_ZERG] = float(self.enemy_race == Race.zerg)
         obs[ObservationIndex.ENEMY_RACE_PROTOSS] = float(self.enemy_race == Race.protoss)
         obs[ObservationIndex.ENEMY_PROXIMITY] = self.get_enemy_proximity()
+        obs[ObservationIndex.REFINERY_COUNT] = self.refinery_index / self.max_refineries
+        obs[ObservationIndex.IS_REFINERY_BUILDING] = float(sum(
+            [refinery[FeatureUnit.build_progress] < 100 for refinery in self.get_units(Terran.Refinery)]
+        ))
 
         obs_index = len(ObservationIndex)
         action_req_len = len(ActionRequirement().to_numpy())
@@ -885,3 +902,35 @@ class PlannedActionEnv(gym.Env):
             relative_position = (furthest_position - self.base_locations[0][1]) / \
                                 (self.base_locations[-1][1] - self.base_locations[0][1])
             return relative_position
+
+    def can_build_refinery(self) -> ActionRequirement:
+        action_requirement = self.get_requirements(Terran.Refinery)
+        if self.refinery_index >= self.max_refineries:
+            action_requirement.invalid = True
+        return action_requirement
+
+    def build_refinery(self):
+        if self.refinery_index >= len(self.geysers):
+            self.logger.warning(f"Geyser not found")
+            return None
+        geyser = self.geysers[self.refinery_index]
+        location = np.array([geyser[FeatureUnit.x], geyser[FeatureUnit.y]])
+
+        worker = self.get_nearest_worker(location)
+        if worker is None:
+            self.logger.warning(f"Free worker not found")
+            return None
+
+        self.refinery_index += 1
+        return actions.RAW_FUNCTIONS.Build_Refinery_pt("now", worker[FeatureUnit.tag], geyser[FeatureUnit.tag])
+
+    def get_geysers(self):
+        all_geysers = self.get_units(Neutral.VespeneGeyser)
+        base_locations_indices = [0, 1] if self.player_on_left else [3, 2]
+        geysers = []
+        for base_location_index in base_locations_indices:
+            base_location = self.base_locations[base_location_index]
+            for geyser in all_geysers:
+                if (geyser.x - base_location[0]) ** 2 + (geyser.y - base_location[1]) ** 2 < 100:
+                    geysers.append(geyser)
+        return geysers

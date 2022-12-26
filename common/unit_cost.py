@@ -18,5 +18,6 @@ unit_to_cost = {
     Terran.SupplyDepot: Cost(100),
     Terran.Barracks: Cost(150),
     Terran.SCV: Cost(50, 0, 1),
-    Terran.Marine: Cost(50, 0, 1)
+    Terran.Marine: Cost(50, 0, 1),
+    Terran.Refinery: Cost(75)
 }
