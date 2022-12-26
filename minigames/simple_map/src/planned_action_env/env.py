@@ -6,7 +6,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from enum import IntEnum
 import random
-from typing import Optional, List, Set, Union, Dict
+from typing import Optional, List, Set, Union, Dict, Tuple
 
 import gym
 import numpy as np
@@ -36,6 +36,7 @@ class ActionIndex(IntEnum):
     GATHER_ARMY = 8
     NOTHING = 9
     BUILD_REFINERY = 10
+    BUILD_ENGINEERING_BAY = 11
 
 
 class ObservationIndex(IntEnum):
@@ -58,6 +59,8 @@ class ObservationIndex(IntEnum):
     ENEMY_PROXIMITY = 16
     REFINERY_COUNT = 17     # scale max_refinery
     IS_REFINERY_BUILDING = 18
+    ENGINEERING_BAY_COUNT = 19  # scale 2
+    IS_ENGINEERING_BAY_BUILDING = 20
 
 
 supply_limit = 200
@@ -74,7 +77,8 @@ action_to_unit = {
     ActionIndex.BUILD_SCV: Terran.SCV,
     ActionIndex.BUILD_SUPPLY: Terran.SupplyDepot,
     ActionIndex.BUILD_BARRACKS: Terran.Barracks,
-    ActionIndex.BUILD_REFINERY: Terran.Refinery
+    ActionIndex.BUILD_REFINERY: Terran.Refinery,
+    ActionIndex.BUILD_ENGINEERING_BAY: Terran.EngineeringBay
 }
 
 
@@ -191,7 +195,8 @@ class PlannedActionEnv(gym.Env):
             ActionIndex.GATHER_ARMY: self.gather_army,
             ActionIndex.BUILD_CC: self.build_cc,
             ActionIndex.NOTHING: self.do_nothing,
-            ActionIndex.BUILD_REFINERY: self.build_refinery
+            ActionIndex.BUILD_REFINERY: self.build_refinery,
+            ActionIndex.BUILD_ENGINEERING_BAY: self.build_engineering_bay
         }
         self.valid_action_mapping = {
             ActionIndex.BUILD_MARINE: self.can_build_marine,
@@ -204,12 +209,14 @@ class PlannedActionEnv(gym.Env):
             ActionIndex.GATHER_ARMY: self.has_any_military_units,
             ActionIndex.BUILD_CC: self.can_build_cc,
             ActionIndex.NOTHING: self.can_do_nothing,
-            ActionIndex.BUILD_REFINERY: self.can_build_refinery
+            ActionIndex.BUILD_REFINERY: self.can_build_refinery,
+            ActionIndex.BUILD_ENGINEERING_BAY: self.can_build_engineering_bay
         }
         self.building_to_action_mapping = {
             Terran.SupplyDepot: ActionIndex.BUILD_SUPPLY,
             Terran.Barracks: ActionIndex.BUILD_BARRACKS,
-            Terran.Refinery: ActionIndex.BUILD_REFINERY
+            Terran.Refinery: ActionIndex.BUILD_REFINERY,
+            Terran.EngineeringBay: ActionIndex.BUILD_ENGINEERING_BAY
         }
 
         self.pending_actions: List[ActionIndex] = []
@@ -230,6 +237,8 @@ class PlannedActionEnv(gym.Env):
         self.max_refineries = max_refineries
         self.refinery_index = 0
         self.geysers = []
+        self.upgrade_building_index = 0
+        self.engineering_bay_index = 0
 
     def init_env(self):
         self.env = sc2_env.SC2Env(**self.settings)
@@ -262,6 +271,8 @@ class PlannedActionEnv(gym.Env):
         self.finishing_move_triggered = False
         self.refinery_index = 0
         self.geysers = self.get_geysers()
+        self.upgrade_building_index = 0
+        self.engineering_bay_index = 0
 
         return self.get_derived_obs()
 
@@ -463,7 +474,7 @@ class PlannedActionEnv(gym.Env):
                     break
         return worker_targets
 
-    def get_nearest_worker(self, location: np.ndarray):
+    def get_nearest_worker(self, location: Union[np.ndarray, Tuple[int, int]]):
         all_workers = self.get_units(Terran.SCV, alliance=PlayerRelative.SELF)
         idle_workers = list(filter(lambda u: u[FeatureUnit.order_length] == 0, all_workers))
         worker = self.get_nearest_worker_from_list(location, idle_workers)
@@ -519,6 +530,10 @@ class PlannedActionEnv(gym.Env):
         obs[ObservationIndex.REFINERY_COUNT] = self.refinery_index / self.max_refineries
         obs[ObservationIndex.IS_REFINERY_BUILDING] = float(sum(
             [refinery[FeatureUnit.build_progress] < 100 for refinery in self.get_units(Terran.Refinery)]
+        ))
+        obs[ObservationIndex.ENGINEERING_BAY_COUNT] = self.engineering_bay_index / 2
+        obs[ObservationIndex.IS_ENGINEERING_BAY_BUILDING] = float(sum(
+            [refinery[FeatureUnit.build_progress] < 100 for refinery in self.get_units(Terran.EngineeringBay)]
         ))
 
         obs_index = len(ObservationIndex)
@@ -938,3 +953,35 @@ class PlannedActionEnv(gym.Env):
                 if (geyser.x - base_location[0]) ** 2 + (geyser.y - base_location[1]) ** 2 < 100:
                     geysers.append(geyser)
         return geysers
+
+    def get_upgrade_building_locations(self) -> List[Tuple[int, int]]:
+        return self.upgrade_building_locations[0 if self.player_on_left else 1]
+
+    def can_build_engineering_bay(self) -> ActionRequirement:
+        action_requirement = self.get_requirements(Terran.EngineeringBay)
+        locations = self.get_upgrade_building_locations()
+        if self.upgrade_building_index >= len(locations):
+            action_requirement.invalid = True
+        if self.engineering_bay_index >= 2:
+            action_requirement.invalid = True
+        return action_requirement
+
+    def build_engineering_bay(self):
+        locations = self.get_upgrade_building_locations()
+        if self.upgrade_building_index >= len(locations):
+            self.logger.warning("No upgrade building location left")
+            return None
+        if self.engineering_bay_index >= 2:
+            self.logger.warning("Max engineering bay locations reached")
+            return None
+
+        location = locations[self.upgrade_building_index]
+
+        worker = self.get_nearest_worker(location)
+        if worker is None:
+            self.logger.warning(f"Free worker not found")
+            return None
+
+        self.upgrade_building_index += 1
+        self.engineering_bay_index += 1
+        return actions.RAW_FUNCTIONS.Build_EngineeringBay_pt("now", worker[FeatureUnit.tag], location)
