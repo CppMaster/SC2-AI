@@ -134,7 +134,7 @@ class PlannedActionEnv(gym.Env):
 
     max_game_step = 28800
     army_actions = {ActionIndex.ATTACK, ActionIndex.RETREAT, ActionIndex.STOP_ARMY, ActionIndex.GATHER_ARMY}
-    building_types = [Terran.SupplyDepot, Terran.Barracks]
+    building_types = [Terran.SupplyDepot, Terran.Barracks, Terran.Refinery, Terran.EngineeringBay]
     production_building_types = {Terran.Barracks}
 
     def __init__(self, step_mul: int = 8, realtime: bool = False, difficulty: Difficulty = Difficulty.medium,
