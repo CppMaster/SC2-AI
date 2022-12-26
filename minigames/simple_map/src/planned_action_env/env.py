@@ -20,6 +20,7 @@ from pysc2.lib.units import Terran, Neutral, Zerg, Protoss
 from common.building_requirements import get_building_requirement
 from common.unit_cost import unit_to_cost, Cost
 from minigames.collect_minerals_and_gas.src.env import OrderId
+from minigames.simple_map.src.planned_action_env.difficulty_scheduler import DifficultyScheduler
 from minigames.simple_map.src.planned_action_env.reward_shaper import RewardShaper
 
 
@@ -128,7 +129,8 @@ class PlannedActionEnv(gym.Env):
                  enemy_race: sc2_env.Race = sc2_env.Race.random,
                  reward_shapers: Optional[List[RewardShaper]] = None,
                  time_to_finishing_move: float = 0.8, supply_to_finishing_move: int = 200,
-                 free_supply_margin_factor: float = 2.0, output_path: Optional[str] = None):
+                 free_supply_margin_factor: float = 2.0, output_path: Optional[str] = None,
+                 difficulty_scheduler: Optional[DifficultyScheduler] = None):
         self.settings = {
             'map_name': "Simple64_towers",
             'players': [sc2_env.Agent(sc2_env.Race.terran), sc2_env.Bot(enemy_race, difficulty)],
@@ -209,6 +211,10 @@ class PlannedActionEnv(gym.Env):
         self.enemy_race = Race.random
         self.reached_enemy_main = False
         self.override_chosen_action: Optional[ActionIndex] = None
+        self.difficulty_scheduler = difficulty_scheduler
+        if self.difficulty_scheduler:
+            self.difficulty_scheduler.current_difficulty = difficulty
+        self.finishing_move_triggered = False
 
     def init_env(self):
         self.env = sc2_env.SC2Env(**self.settings)
@@ -238,6 +244,7 @@ class PlannedActionEnv(gym.Env):
         self.enemy_race = Race.random
         self.reached_enemy_main = False
         self.override_chosen_action = None
+        self.finishing_move_triggered = False
 
         return self.get_derived_obs()
 
@@ -345,8 +352,9 @@ class PlannedActionEnv(gym.Env):
         action_requirement = self.get_requirements(Terran.SupplyDepot)
         if self.supply_depot_index >= len(self.supply_depot_locations):
             action_requirement.invalid = True
-        elif not self.building_states[Terran.SupplyDepot].NOT_PRESENT and self.get_expected_supply_cap() > \
-                self.get_supply_taken() + self.free_supply_margin_factor * (1 + self.get_production_building_count()):
+        elif self.building_states[Terran.SupplyDepot] != BuildingTypeState.NOT_PRESENT \
+                and self.get_expected_supply_cap() > self.get_supply_taken() \
+                + self.free_supply_margin_factor * (1 + self.get_production_building_count()):
             action_requirement.invalid = True
         return action_requirement
 
@@ -762,8 +770,9 @@ class PlannedActionEnv(gym.Env):
         return states
 
     def should_do_finishing_attack(self):
-        return self.get_normalized_time() >= self.time_to_finishing_move or \
-               self.get_supply_taken() >= self.supply_to_finishing_move
+        self.finishing_move_triggered |= self.get_normalized_time() >= self.time_to_finishing_move or \
+                                         self.get_supply_taken() >= self.supply_to_finishing_move
+        return self.finishing_move_triggered
 
     def get_action_requirements(self) -> Dict[ActionIndex, ActionRequirement]:
         return {action_index: able_func() for action_index, able_func in self.valid_action_mapping.items()}
@@ -783,6 +792,14 @@ class PlannedActionEnv(gym.Env):
                     json.dump(self.episode_rewards, f)
             except Exception as e:
                 self.logger.error(f"Error during saving episode rewards: '{e}'")
+
+        self.update_difficulty_scheduler(reward)
+
+    def update_difficulty_scheduler(self, score: float):
+        if self.difficulty_scheduler is None:
+            return None
+        next_difficulty = self.difficulty_scheduler.report_score(score)
+        self.settings["players"][1] = sc2_env.Bot(self.settings["players"][1].race, next_difficulty)
 
     def get_shaped_rewards(self) -> float:
         return functools.reduce(float.__add__, [
