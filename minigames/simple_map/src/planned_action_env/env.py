@@ -2,10 +2,10 @@ import functools
 import json
 import logging
 import os
+import random
 from collections import defaultdict
 from dataclasses import dataclass, field
 from enum import IntEnum
-import random
 from typing import Optional, List, Set, Union, Dict, Tuple
 
 import gym
@@ -16,9 +16,10 @@ from pysc2.env.sc2_env import SC2Env, Dimensions, Difficulty, Race
 from pysc2.lib import features, actions
 from pysc2.lib.features import FeatureUnit, Player, PlayerRelative
 from pysc2.lib.units import Terran, Neutral, Zerg, Protoss
+from pysc2.lib.upgrades import Upgrades
 
 from common.building_requirements import get_building_requirement
-from common.unit_cost import unit_to_cost, Cost
+from common.unit_cost import unit_to_cost, Cost, get_item_cost
 from minigames.collect_minerals_and_gas.src.env import OrderId
 from minigames.simple_map.src.planned_action_env.difficulty_scheduler import DifficultyScheduler
 from minigames.simple_map.src.planned_action_env.reward_shaper import RewardShaper
@@ -37,30 +38,36 @@ class ActionIndex(IntEnum):
     NOTHING = 9
     BUILD_REFINERY = 10
     BUILD_ENGINEERING_BAY = 11
+    RESEARCH_INFANTRY_WEAPONS = 12
+    BUILD_FACTORY = 13
+    BUILD_ARMORY = 14
 
 
 class ObservationIndex(IntEnum):
-    MINERALS = 0        # scale 500
-    SUPPLY_TAKEN = 1    # scale 200
-    SUPPLY_ALL = 2      # scale 200
-    SUPPLY_FREE = 3     # scale 16
-    SCV_COUNT = 4       # scale 50
-    TIME_STEP = 5       # scale 28800
+    MINERALS = 0  # scale 500
+    SUPPLY_TAKEN = 1  # scale 200
+    SUPPLY_ALL = 2  # scale 200
+    SUPPLY_FREE = 3  # scale 16
+    SCV_COUNT = 4  # scale 50
+    TIME_STEP = 5  # scale 28800
     SUPPLY_DEPOT_COUNT = 6
     IS_SUPPLY_DEPOT_BUILDING = 7
     PRODUCTION_BUILDING_COUNT = 8
     IS_BARRACKS_BUILDING = 9
-    MILITARY_COUNT = 10     # scale 100
+    MILITARY_COUNT = 10  # scale 100
     CC_STARTED_BUILDING = 11
     CC_BUILT = 12
     ENEMY_RACE_TERRAN = 13
     ENEMY_RACE_ZERG = 14
     ENEMY_RACE_PROTOSS = 15
     ENEMY_PROXIMITY = 16
-    REFINERY_COUNT = 17     # scale max_refinery
+    REFINERY_COUNT = 17  # scale max_refinery
     IS_REFINERY_BUILDING = 18
     ENGINEERING_BAY_COUNT = 19  # scale 2
     IS_ENGINEERING_BAY_BUILDING = 20
+    INFANTRY_WEAPONS_COMPLETED = 21  # scale 3
+    ARMORY_COUNT = 22
+    IS_ARMORY_BUILDING = 23
 
 
 supply_limit = 200
@@ -69,7 +76,11 @@ cc_max_workers = 24
 refinery_max_workers = 3
 mineral_max_workers = 3
 mineral_optimal_workers = 2
-
+building_limits = {
+    Terran.EngineeringBay: 2,
+    Terran.Armory: 1,
+    Terran.Factory: 1
+}
 
 action_to_unit = {
     ActionIndex.BUILD_MARINE: Terran.Marine,
@@ -81,10 +92,16 @@ action_to_unit = {
     ActionIndex.BUILD_ENGINEERING_BAY: Terran.EngineeringBay
 }
 
+action_to_upgrade = {
+    ActionIndex.RESEARCH_INFANTRY_WEAPONS: Upgrades.TerranInfantryWeaponsLevel1
+}
+
 
 def get_action_cost(action_index: ActionIndex) -> Cost:
-    unit_type = action_to_unit.get(action_index, -1)
-    return unit_to_cost.get(unit_type, Cost())
+    item_type = action_to_unit.get(action_index, -1)
+    if item_type == -1:
+        item_type = action_to_upgrade.get(action_index, -1)
+    return unit_to_cost.get(item_type, Cost())
 
 
 @dataclass
@@ -115,7 +132,6 @@ class BuildingTypeState(IntEnum):
 
 
 class PlannedActionEnv(gym.Env):
-
     metadata = {'render.modes': ['human']}
     map_dimensions = (88, 96)
     base_locations = [(26, 35), (57, 31), (23, 72), (54, 68)]
@@ -134,7 +150,8 @@ class PlannedActionEnv(gym.Env):
 
     max_game_step = 28800
     army_actions = {ActionIndex.ATTACK, ActionIndex.RETREAT, ActionIndex.STOP_ARMY, ActionIndex.GATHER_ARMY}
-    building_types = [Terran.SupplyDepot, Terran.Barracks, Terran.Refinery, Terran.EngineeringBay]
+    building_types = [Terran.SupplyDepot, Terran.Barracks, Terran.Refinery, Terran.EngineeringBay, Terran.Factory,
+                      Terran.Armory]
     production_building_types = {Terran.Barracks}
 
     def __init__(self, step_mul: int = 8, realtime: bool = False, difficulty: Difficulty = Difficulty.medium,
@@ -196,7 +213,10 @@ class PlannedActionEnv(gym.Env):
             ActionIndex.BUILD_CC: self.build_cc,
             ActionIndex.NOTHING: self.do_nothing,
             ActionIndex.BUILD_REFINERY: self.build_refinery,
-            ActionIndex.BUILD_ENGINEERING_BAY: self.build_engineering_bay
+            ActionIndex.BUILD_ENGINEERING_BAY: self.build_engineering_bay,
+            ActionIndex.RESEARCH_INFANTRY_WEAPONS: self.research_infantry_weapons,
+            ActionIndex.BUILD_FACTORY: self.build_factory,
+            ActionIndex.BUILD_ARMORY: self.build_armory
         }
         self.valid_action_mapping = {
             ActionIndex.BUILD_MARINE: self.can_build_marine,
@@ -210,13 +230,18 @@ class PlannedActionEnv(gym.Env):
             ActionIndex.BUILD_CC: self.can_build_cc,
             ActionIndex.NOTHING: self.can_do_nothing,
             ActionIndex.BUILD_REFINERY: self.can_build_refinery,
-            ActionIndex.BUILD_ENGINEERING_BAY: self.can_build_engineering_bay
+            ActionIndex.BUILD_ENGINEERING_BAY: self.can_build_engineering_bay,
+            ActionIndex.RESEARCH_INFANTRY_WEAPONS: self.can_research_infantry_weapons,
+            ActionIndex.BUILD_FACTORY: self.can_build_factory,
+            ActionIndex.BUILD_ARMORY: self.can_build_armory
         }
         self.building_to_action_mapping = {
             Terran.SupplyDepot: ActionIndex.BUILD_SUPPLY,
             Terran.Barracks: ActionIndex.BUILD_BARRACKS,
             Terran.Refinery: ActionIndex.BUILD_REFINERY,
-            Terran.EngineeringBay: ActionIndex.BUILD_ENGINEERING_BAY
+            Terran.EngineeringBay: ActionIndex.BUILD_ENGINEERING_BAY,
+            Terran.Armory: ActionIndex.BUILD_ARMORY,
+            Terran.Factory: ActionIndex.BUILD_FACTORY
         }
 
         self.pending_actions: List[ActionIndex] = []
@@ -239,6 +264,7 @@ class PlannedActionEnv(gym.Env):
         self.geysers = []
         self.upgrade_building_index = 0
         self.engineering_bay_index = 0
+        self.armory_index = 0
 
     def init_env(self):
         self.env = sc2_env.SC2Env(**self.settings)
@@ -273,6 +299,7 @@ class PlannedActionEnv(gym.Env):
         self.geysers = self.get_geysers()
         self.upgrade_building_index = 0
         self.engineering_bay_index = 0
+        self.armory_index = 0
 
         return self.get_derived_obs()
 
@@ -327,9 +354,9 @@ class PlannedActionEnv(gym.Env):
                 self.pending_actions = self.pending_actions[1:]
             elif pending_action_requirement.buildings:
                 self.pending_actions = [
-                    self.building_to_action_mapping[Terran(building)]
-                    for building in pending_action_requirement.buildings
-                ] + self.pending_actions
+                                           self.building_to_action_mapping[Terran(building)]
+                                           for building in pending_action_requirement.buildings
+                                       ] + self.pending_actions
 
         if action_requirement.can_do_instantly:
             return self.action_mapping[self.last_action_index]()
@@ -338,8 +365,9 @@ class PlannedActionEnv(gym.Env):
             self.pending_actions.append(self.last_action_index)
             if action_requirement.buildings:
                 self.pending_actions = [
-                    self.building_to_action_mapping[Terran(building)] for building in action_requirement.buildings
-                ] + self.pending_actions
+                                           self.building_to_action_mapping[Terran(building)] for building in
+                                           action_requirement.buildings
+                                       ] + self.pending_actions
 
         return None
 
@@ -531,10 +559,15 @@ class PlannedActionEnv(gym.Env):
         obs[ObservationIndex.IS_REFINERY_BUILDING] = float(sum(
             [refinery[FeatureUnit.build_progress] < 100 for refinery in self.get_units(Terran.Refinery)]
         ))
-        obs[ObservationIndex.ENGINEERING_BAY_COUNT] = self.engineering_bay_index / 2
+        obs[ObservationIndex.ENGINEERING_BAY_COUNT] = \
+            self.engineering_bay_index / building_limits[Terran.EngineeringBay]
         obs[ObservationIndex.IS_ENGINEERING_BAY_BUILDING] = float(sum(
             [refinery[FeatureUnit.build_progress] < 100 for refinery in self.get_units(Terran.EngineeringBay)]
         ))
+        obs[ObservationIndex.INFANTRY_WEAPONS_COMPLETED] \
+            = (float(Upgrades.TerranInfantryWeaponsLevel1 in self.raw_obs.observation.upgrades)
+               + float(Upgrades.TerranInfantryWeaponsLevel2 in self.raw_obs.observation.upgrades)
+               + float(Upgrades.TerranInfantryWeaponsLevel3 in self.raw_obs.observation.upgrades)) / 3.0
 
         obs_index = len(ObservationIndex)
         action_req_len = len(ActionRequirement().to_numpy())
@@ -846,11 +879,13 @@ class PlannedActionEnv(gym.Env):
         buildings = self.get_units(self.production_building_types, alliance=PlayerRelative.SELF)
         return sum(building[FeatureUnit.build_progress] == 100 for building in buildings)
 
-    def get_requirements(self, unit_type: Terran) -> ActionRequirement:
+    def get_requirements(self, item: Union[Terran, Upgrades]) -> ActionRequirement:
         player = self.raw_obs.observation.player
-        cost = unit_to_cost[unit_type]
+        cost = get_item_cost(item)
         for pending_action in self.pending_actions:
-            if action_to_unit[pending_action] == unit_type:
+            if pending_action in action_to_unit and action_to_unit[pending_action] == item:
+                break
+            if pending_action in action_to_upgrade and action_to_upgrade[pending_action] == item:
                 break
             cost += get_action_cost(pending_action)
         action_requirement = ActionRequirement()
@@ -864,7 +899,7 @@ class PlannedActionEnv(gym.Env):
         if player[Player.vespene] < cost.vespene:
             action_requirement.vespene = True
 
-        building_requirement = get_building_requirement(unit_type)
+        building_requirement = get_building_requirement(item)
         if building_requirement.production:
             production_building_types = set(building_requirement.production)
             if len(self.get_units(production_building_types, alliance=PlayerRelative.SELF)) == 0:
@@ -899,7 +934,7 @@ class PlannedActionEnv(gym.Env):
                             self.logger.warning(f"Unexpected enemy unit type: {unit.unit_type}")
                         break
                     except ValueError:
-                        pass    # wrong race
+                        pass  # wrong race
                 else:
                     self.logger.warning(f"Unexpected enemy unit type: {unit.unit_type}")
                 if self.enemy_race != Race.random:
@@ -962,7 +997,7 @@ class PlannedActionEnv(gym.Env):
         locations = self.get_upgrade_building_locations()
         if self.upgrade_building_index >= len(locations):
             action_requirement.invalid = True
-        if self.engineering_bay_index >= 2:
+        if self.engineering_bay_index >= building_limits[Terran.EngineeringBay]:
             action_requirement.invalid = True
         return action_requirement
 
@@ -971,8 +1006,8 @@ class PlannedActionEnv(gym.Env):
         if self.upgrade_building_index >= len(locations):
             self.logger.warning("No upgrade building location left")
             return None
-        if self.engineering_bay_index >= 2:
-            self.logger.warning("Max engineering bay locations reached")
+        if self.engineering_bay_index >= building_limits[Terran.EngineeringBay]:
+            self.logger.warning("Max engineering bay count reached")
             return None
 
         location = locations[self.upgrade_building_index]
@@ -985,3 +1020,74 @@ class PlannedActionEnv(gym.Env):
         self.upgrade_building_index += 1
         self.engineering_bay_index += 1
         return actions.RAW_FUNCTIONS.Build_EngineeringBay_pt("now", worker[FeatureUnit.tag], location)
+
+    def can_research_infantry_weapons(self) -> ActionRequirement:
+        completed_upgrades = self.raw_obs.observation.upgrades
+        if Upgrades.TerranInfantryWeaponsLevel3 in completed_upgrades:
+            return ActionRequirement(invalid=True)
+
+        bays = self.get_units(Terran.EngineeringBay)
+        for bay in bays:
+            if bay.order_id_0 in {457, 458, 459, 456}:
+                return ActionRequirement(invalid=True)
+
+        if Upgrades.TerranInfantryWeaponsLevel2 in completed_upgrades:
+            return self.get_requirements(Upgrades.TerranInfantryWeaponsLevel3)
+        if Upgrades.TerranInfantryWeaponsLevel1 in completed_upgrades:
+            return self.get_requirements(Upgrades.TerranInfantryWeaponsLevel2)
+        return self.get_requirements(Upgrades.TerranInfantryWeaponsLevel1)
+
+    def research_infantry_weapons(self):
+        bay = self.get_free_building(Terran.EngineeringBay)
+        if bay is None:
+            self.logger.warning(f"Free Engineering Bay not found")
+            return None
+
+        return actions.RAW_FUNCTIONS.Research_TerranInfantryWeapons_quick("now", bay.tag)
+
+    def can_build_factory(self):
+        action_requirement = self.get_requirements(Terran.Factory)
+        if self.production_building_index >= len(self.production_buildings_locations):
+            action_requirement.invalid = True
+        if len(self.get_units(Terran.Factory)) >= building_limits[Terran.Factory]:
+            action_requirement.invalid = True
+        return action_requirement
+
+    def build_factory(self):
+        location = self.production_buildings_locations[self.production_building_index]
+        worker = self.get_nearest_worker(location)
+        if worker is None:
+            self.logger.warning(f"Free worker not found")
+            return []
+
+        self.production_building_index += 1
+        return actions.RAW_FUNCTIONS.Build_Factory_pt("now", worker[FeatureUnit.tag], location)
+
+    def can_build_armory(self) -> ActionRequirement:
+        action_requirement = self.get_requirements(Terran.Armory)
+        locations = self.get_upgrade_building_locations()
+        if self.upgrade_building_index >= len(locations):
+            action_requirement.invalid = True
+        if self.armory_index >= building_limits[Terran.Armory]:
+            action_requirement.invalid = True
+        return action_requirement
+
+    def build_armory(self):
+        locations = self.get_upgrade_building_locations()
+        if self.upgrade_building_index >= len(locations):
+            self.logger.warning("No upgrade building location left")
+            return None
+        if self.armory_index >= building_limits[Terran.Armory]:
+            self.logger.warning("Max engineering bay count reached")
+            return None
+
+        location = locations[self.upgrade_building_index]
+
+        worker = self.get_nearest_worker(location)
+        if worker is None:
+            self.logger.warning(f"Free worker not found")
+            return None
+
+        self.upgrade_building_index += 1
+        self.armory_index += 1
+        return actions.RAW_FUNCTIONS.Build_Armory_pt("now", worker[FeatureUnit.tag], location)
