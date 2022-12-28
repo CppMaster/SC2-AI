@@ -1,6 +1,8 @@
 import logging
 import random
 import sys
+from typing import Optional
+
 from absl import flags
 import numpy as np
 from pysc2.env.sc2_env import Difficulty
@@ -18,6 +20,10 @@ logging.basicConfig(encoding='utf-8', level=logging.DEBUG)
 env = PlannedActionEnv(step_mul=4, realtime=False, difficulty=Difficulty.hard, time_to_finishing_move=0.8,
                        free_supply_margin_factor=1.0)
 monitor_env = Monitor(env)
+
+
+forced_action: Optional[ActionIndex] = ActionIndex.RESEARCH_INFANTRY_ARMOR
+
 
 while True:
     done = False
