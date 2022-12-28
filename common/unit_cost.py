@@ -14,6 +14,9 @@ class Cost:
     def __add__(self, other: "Cost"):
         return Cost(self.minerals + other.minerals, self.vespene + other.vespene, self.supply + other.supply)
 
+    def clone(self) -> "Cost":
+        return Cost(self.minerals, self.vespene, self.supply)
+
 
 unit_to_cost = {
     Terran.CommandCenter: Cost(400),

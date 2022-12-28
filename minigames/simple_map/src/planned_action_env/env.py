@@ -19,7 +19,7 @@ from pysc2.lib.units import Terran, Neutral, Zerg, Protoss
 from pysc2.lib.upgrades import Upgrades
 
 from common.building_requirements import get_building_requirement
-from common.unit_cost import unit_to_cost, Cost, get_item_cost
+from common.unit_cost import unit_to_cost, Cost, get_item_cost, upgrade_to_cost
 from minigames.collect_minerals_and_gas.src.env import OrderId
 from minigames.simple_map.src.planned_action_env.difficulty_scheduler import DifficultyScheduler
 from minigames.simple_map.src.planned_action_env.reward_shaper import RewardShaper
@@ -41,6 +41,7 @@ class ActionIndex(IntEnum):
     RESEARCH_INFANTRY_WEAPONS = 12
     BUILD_FACTORY = 13
     BUILD_ARMORY = 14
+    RESEARCH_INFANTRY_ARMOR = 15
 
 
 class ObservationIndex(IntEnum):
@@ -68,6 +69,9 @@ class ObservationIndex(IntEnum):
     INFANTRY_WEAPONS_COMPLETED = 21  # scale 3
     ARMORY_COUNT = 22
     IS_ARMORY_BUILDING = 23
+    FACTORY_COUNT = 24
+    IS_FACTORY_BUILDING = 25
+    INFANTRY_ARMOR_COMPLETED = 26  # scale 3
 
 
 supply_limit = 200
@@ -93,15 +97,11 @@ action_to_unit = {
 }
 
 action_to_upgrade = {
-    ActionIndex.RESEARCH_INFANTRY_WEAPONS: Upgrades.TerranInfantryWeaponsLevel1
+    ActionIndex.RESEARCH_INFANTRY_WEAPONS: {Upgrades.TerranInfantryWeaponsLevel1, Upgrades.TerranInfantryWeaponsLevel2,
+                                            Upgrades.TerranInfantryWeaponsLevel3},
+    ActionIndex.RESEARCH_INFANTRY_ARMOR: {Upgrades.TerranInfantryArmorsLevel1, Upgrades.TerranInfantryArmorsLevel2,
+                                          Upgrades.TerranInfantryArmorsLevel3}
 }
-
-
-def get_action_cost(action_index: ActionIndex) -> Cost:
-    item_type = action_to_unit.get(action_index, -1)
-    if item_type == -1:
-        item_type = action_to_upgrade.get(action_index, -1)
-    return unit_to_cost.get(item_type, Cost())
 
 
 @dataclass
@@ -216,7 +216,8 @@ class PlannedActionEnv(gym.Env):
             ActionIndex.BUILD_ENGINEERING_BAY: self.build_engineering_bay,
             ActionIndex.RESEARCH_INFANTRY_WEAPONS: self.research_infantry_weapons,
             ActionIndex.BUILD_FACTORY: self.build_factory,
-            ActionIndex.BUILD_ARMORY: self.build_armory
+            ActionIndex.BUILD_ARMORY: self.build_armory,
+            ActionIndex.RESEARCH_INFANTRY_ARMOR: self.research_infantry_armor,
         }
         self.valid_action_mapping = {
             ActionIndex.BUILD_MARINE: self.can_build_marine,
@@ -233,7 +234,8 @@ class PlannedActionEnv(gym.Env):
             ActionIndex.BUILD_ENGINEERING_BAY: self.can_build_engineering_bay,
             ActionIndex.RESEARCH_INFANTRY_WEAPONS: self.can_research_infantry_weapons,
             ActionIndex.BUILD_FACTORY: self.can_build_factory,
-            ActionIndex.BUILD_ARMORY: self.can_build_armory
+            ActionIndex.BUILD_ARMORY: self.can_build_armory,
+            ActionIndex.RESEARCH_INFANTRY_ARMOR: self.can_research_infantry_armor
         }
         self.building_to_action_mapping = {
             Terran.SupplyDepot: ActionIndex.BUILD_SUPPLY,
@@ -562,12 +564,26 @@ class PlannedActionEnv(gym.Env):
         obs[ObservationIndex.ENGINEERING_BAY_COUNT] = \
             self.engineering_bay_index / building_limits[Terran.EngineeringBay]
         obs[ObservationIndex.IS_ENGINEERING_BAY_BUILDING] = float(sum(
-            [refinery[FeatureUnit.build_progress] < 100 for refinery in self.get_units(Terran.EngineeringBay)]
+            [b[FeatureUnit.build_progress] < 100 for b in self.get_units(Terran.EngineeringBay)]
         ))
         obs[ObservationIndex.INFANTRY_WEAPONS_COMPLETED] \
             = (float(Upgrades.TerranInfantryWeaponsLevel1 in self.raw_obs.observation.upgrades)
                + float(Upgrades.TerranInfantryWeaponsLevel2 in self.raw_obs.observation.upgrades)
                + float(Upgrades.TerranInfantryWeaponsLevel3 in self.raw_obs.observation.upgrades)) / 3.0
+        obs[ObservationIndex.INFANTRY_ARMOR_COMPLETED] \
+            = (float(Upgrades.TerranInfantryArmorsLevel1 in self.raw_obs.observation.upgrades)
+               + float(Upgrades.TerranInfantryArmorsLevel2 in self.raw_obs.observation.upgrades)
+               + float(Upgrades.TerranInfantryArmorsLevel3 in self.raw_obs.observation.upgrades)) / 3.0
+        obs[ObservationIndex.ARMORY_COUNT] = \
+            self.armory_index / building_limits[Terran.Armory]
+        obs[ObservationIndex.IS_ARMORY_BUILDING] = float(sum(
+            [b[FeatureUnit.build_progress] < 100 for b in self.get_units(Terran.Armory)]
+        ))
+        obs[ObservationIndex.FACTORY_COUNT] = \
+            len(self.get_units(Terran.Factory)) / building_limits[Terran.Factory]
+        obs[ObservationIndex.IS_FACTORY_BUILDING] = float(sum(
+            [b[FeatureUnit.build_progress] < 100 for b in self.get_units(Terran.Factory)]
+        ))
 
         obs_index = len(ObservationIndex)
         action_req_len = len(ActionRequirement().to_numpy())
@@ -881,22 +897,23 @@ class PlannedActionEnv(gym.Env):
 
     def get_requirements(self, item: Union[Terran, Upgrades]) -> ActionRequirement:
         player = self.raw_obs.observation.player
-        cost = get_item_cost(item)
+        base_cost = get_item_cost(item)
+        total_cost = base_cost.clone()
         for pending_action in self.pending_actions:
             if pending_action in action_to_unit and action_to_unit[pending_action] == item:
                 break
-            if pending_action in action_to_upgrade and action_to_upgrade[pending_action] == item:
+            if pending_action in action_to_upgrade and item in action_to_upgrade[pending_action]:
                 break
-            cost += get_action_cost(pending_action)
+            total_cost += self.get_action_cost(pending_action)
         action_requirement = ActionRequirement()
 
-        if player[Player.food_used] + cost.supply > supply_limit:
+        if player[Player.food_used] + total_cost.supply > supply_limit:
             action_requirement.invalid = True
-        elif player[Player.food_used] + cost.supply > player[Player.food_cap]:
+        elif player[Player.food_used] + total_cost.supply > player[Player.food_cap]:
             action_requirement.buildings.append(Terran.SupplyDepot)
-        if player[Player.minerals] < cost.minerals:
+        if player[Player.minerals] < total_cost.minerals:
             action_requirement.minerals = True
-        if player[Player.vespene] < cost.vespene:
+        if player[Player.vespene] < total_cost.vespene and base_cost.vespene > 0:
             action_requirement.vespene = True
 
         building_requirement = get_building_requirement(item)
@@ -1045,6 +1062,30 @@ class PlannedActionEnv(gym.Env):
 
         return actions.RAW_FUNCTIONS.Research_TerranInfantryWeapons_quick("now", bay.tag)
 
+    def can_research_infantry_armor(self) -> ActionRequirement:
+        completed_upgrades = self.raw_obs.observation.upgrades
+        if Upgrades.TerranInfantryArmorsLevel3 in completed_upgrades:
+            return ActionRequirement(invalid=True)
+
+        bays = self.get_units(Terran.EngineeringBay)
+        for bay in bays:
+            if bay.order_id_0 in {453, 454, 455, 452}:
+                return ActionRequirement(invalid=True)
+
+        if Upgrades.TerranInfantryArmorsLevel2 in completed_upgrades:
+            return self.get_requirements(Upgrades.TerranInfantryArmorsLevel3)
+        if Upgrades.TerranInfantryArmorsLevel1 in completed_upgrades:
+            return self.get_requirements(Upgrades.TerranInfantryArmorsLevel2)
+        return self.get_requirements(Upgrades.TerranInfantryArmorsLevel1)
+
+    def research_infantry_armor(self):
+        bay = self.get_free_building(Terran.EngineeringBay)
+        if bay is None:
+            self.logger.warning(f"Free Engineering Bay not found")
+            return None
+
+        return actions.RAW_FUNCTIONS.Research_TerranInfantryArmor_quick("now", bay.tag)
+
     def can_build_factory(self):
         action_requirement = self.get_requirements(Terran.Factory)
         if self.production_building_index >= len(self.production_buildings_locations):
@@ -1091,3 +1132,29 @@ class PlannedActionEnv(gym.Env):
         self.upgrade_building_index += 1
         self.armory_index += 1
         return actions.RAW_FUNCTIONS.Build_Armory_pt("now", worker[FeatureUnit.tag], location)
+
+    def get_action_cost(self, action_index: ActionIndex) -> Cost:
+        cost = self.get_incremental_upgrade_cost(action_index)
+        if cost is not None:
+            return cost
+
+        item_type = action_to_unit.get(action_index, -1)
+        if item_type == -1:
+            item_type = action_to_upgrade.get(action_index, -1)
+        return unit_to_cost.get(item_type, Cost())
+
+    def get_incremental_upgrade_cost(self, action_index: ActionIndex) -> Optional[Cost]:
+        completed_upgrades = self.raw_obs.observation.upgrades
+        if action_index == ActionIndex.RESEARCH_INFANTRY_WEAPONS:
+            if Upgrades.TerranInfantryWeaponsLevel2 in completed_upgrades:
+                return upgrade_to_cost[Upgrades.TerranInfantryWeaponsLevel3]
+            if Upgrades.TerranInfantryWeaponsLevel1 in completed_upgrades:
+                return upgrade_to_cost[Upgrades.TerranInfantryWeaponsLevel2]
+            return upgrade_to_cost[Upgrades.TerranInfantryWeaponsLevel1]
+
+        if action_index == ActionIndex.RESEARCH_INFANTRY_ARMOR:
+            if Upgrades.TerranInfantryArmorsLevel2 in completed_upgrades:
+                return upgrade_to_cost[Upgrades.TerranInfantryArmorsLevel3]
+            if Upgrades.TerranInfantryArmorsLevel1 in completed_upgrades:
+                return upgrade_to_cost[Upgrades.TerranInfantryArmorsLevel2]
+            return upgrade_to_cost[Upgrades.TerranInfantryArmorsLevel1]
