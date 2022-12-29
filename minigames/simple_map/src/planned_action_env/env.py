@@ -140,8 +140,8 @@ class PlannedActionEnv(gym.Env):
         [(30, 58), (42, 55), (53, 54), (57, 45), (57, 31), (26, 35)]
     ]
     upgrade_building_locations = [
-        [(16, 40), (16, 37), (16, 34), (16, 31), (18, 27), (21, 26), (24, 26)],
-        [(63, 63), (63, 66), (63, 69), (63, 72), (62, 75), (60, 77), (50, 77)]
+        [(16, 38), (16, 34), (16, 30), (19, 26), (23, 26), (26, 26)],
+        [(63, 65), (63, 69), (63, 72), (60, 77), (58, 77), (54, 77)]
     ]
     target_tags_to_ignore = {Zerg.Changeling, Zerg.ChangelingMarine, Zerg.ChangelingMarineShield,
                              Zerg.ChangelingZergling, Zerg.ChangelingZealot, Zerg.Larva, Zerg.Cocoon, Zerg.Overseer,

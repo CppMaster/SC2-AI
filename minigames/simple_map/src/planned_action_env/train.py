@@ -21,7 +21,7 @@ FLAGS(sys.argv)
 
 logging.basicConfig(encoding='utf-8', level=logging.DEBUG)
 
-suffix = "infantry_upgrades"
+suffix = "infantry_upgrades_ebay_fix"
 output_path = f"minigames/simple_map/results/planned_action_logs/{suffix}"
 
 env = PlannedActionEnv(step_mul=4, difficulty=Difficulty.easy, enemy_race=Race.terran,
@@ -42,7 +42,7 @@ env = StackObservationsActionRewardsWrapper(env, reward_scale=1.0,
 model = MaskablePPO(
     "MlpPolicy", env, verbose=1, tensorboard_log=output_path,
     gamma=0.9999, policy_kwargs=dict(activation_fn=nn.LeakyReLU, ortho_init=True),
-    batch_size=256, learning_rate=3e-4, normalize_advantage=True, n_steps=2 ** 16, n_epochs=10
+    batch_size=256, learning_rate=3e-4, normalize_advantage=True, n_steps=2 ** 14, n_epochs=10
 )
 # model = MaskablePPO.load(f"{output_path}/last_model.zip", env)
 
