@@ -198,7 +198,6 @@ class PlannedActionEnv(gym.Env):
         self.supply_depot_locations = np.zeros(shape=(0, 2))
         self.production_buildings_locations = np.zeros(shape=(0, 2))
         self.enemy_base_location = np.zeros(shape=(2,))
-        self.cc_started = False
         self.cc_rally_canceled = False
 
         self.action_mapping = {
@@ -283,7 +282,6 @@ class PlannedActionEnv(gym.Env):
         self.supply_depot_locations = self.get_supply_depot_locations()
         self.production_buildings_locations = self.get_barracks_locations()
         self.enemy_base_location = self.get_enemy_base_location()
-        self.cc_started = False
         self.cc_rally_canceled = False
         self.pending_actions: List[ActionIndex] = []
         self.update_states()
@@ -551,7 +549,8 @@ class PlannedActionEnv(gym.Env):
             self.production_building_index / len(self.production_buildings_locations)
         obs[ObservationIndex.IS_BARRACKS_BUILDING] = self.get_barracks_in_progress()
         obs[ObservationIndex.MILITARY_COUNT] = player[Player.army_count] / 100
-        obs[ObservationIndex.CC_STARTED_BUILDING] = float(self.cc_started)
+        obs[ObservationIndex.CC_STARTED_BUILDING] = \
+            float(len(self.get_units(Terran.CommandCenter, alliance=PlayerRelative.SELF)) == 2)
         obs[ObservationIndex.CC_BUILT] = float(self.is_2nd_cc_built())
         obs[ObservationIndex.ENEMY_RACE_TERRAN] = float(self.enemy_race == Race.terran)
         obs[ObservationIndex.ENEMY_RACE_ZERG] = float(self.enemy_race == Race.zerg)
@@ -814,7 +813,7 @@ class PlannedActionEnv(gym.Env):
 
     def can_build_cc(self) -> ActionRequirement:
         action_requirement = self.get_requirements(Terran.CommandCenter)
-        if self.cc_started:
+        if len(self.get_units(Terran.CommandCenter, alliance=PlayerRelative.SELF)) >= 2:
             action_requirement.invalid = True
         return action_requirement
 
@@ -824,7 +823,6 @@ class PlannedActionEnv(gym.Env):
         if worker is None:
             self.logger.warning(f"Free worker not found")
             return None
-        self.cc_started = True
         return actions.RAW_FUNCTIONS.Build_CommandCenter_pt("now", worker[FeatureUnit.tag], location)
 
     def cancel_cc_rally(self):
@@ -909,7 +907,7 @@ class PlannedActionEnv(gym.Env):
 
         if player[Player.food_used] + total_cost.supply > supply_limit:
             action_requirement.invalid = True
-        elif player[Player.food_used] + total_cost.supply > player[Player.food_cap]:
+        elif player[Player.food_used] + total_cost.supply > player[Player.food_cap] and base_cost.supply > 0:
             action_requirement.buildings.append(Terran.SupplyDepot)
         if player[Player.minerals] < total_cost.minerals:
             action_requirement.minerals = True
