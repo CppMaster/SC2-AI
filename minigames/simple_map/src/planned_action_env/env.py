@@ -14,7 +14,7 @@ from gym.spaces import Box, Discrete
 from pysc2.env import sc2_env
 from pysc2.env.sc2_env import SC2Env, Dimensions, Difficulty, Race
 from pysc2.lib import features, actions
-from pysc2.lib.features import FeatureUnit, Player, PlayerRelative
+from pysc2.lib.features import FeatureUnit, Player, PlayerRelative, MINIMAP_FEATURES
 from pysc2.lib.units import Terran, Neutral, Zerg, Protoss
 from pysc2.lib.upgrades import Upgrades
 
@@ -611,7 +611,11 @@ class PlannedActionEnv(gym.Env):
         return obs
 
     def get_minimap_obs(self) -> np.ndarray:
-        return np.array(self.raw_obs.observation.feature_minimap)
+        feature_minimap = self.raw_obs.observation.feature_minimap
+        feature_values = []
+        for feature in MINIMAP_FEATURES:
+            feature_values.append(np.array(feature_minimap[feature.name]) / feature.scale)
+        return np.array(feature_values)
 
     def get_supply_taken(self) -> int:
         return self.raw_obs.observation.player[Player.food_used]
