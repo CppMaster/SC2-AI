@@ -177,10 +177,15 @@ class PlannedActionEnv(gym.Env):
             'step_mul': step_mul
         }
         self.action_space = Discrete(len(ActionIndex))
-        self.observation_space = Box(low=0.0, high=1.0, shape=(
-            len(ObservationIndex) + len(ActionIndex) * len(ActionRequirement().to_numpy())
-            + len(self.building_types) * len(BuildingTypeState(0).to_numpy()),
-        ))
+
+        self.observation_space = gym.spaces.Dict({
+            "non_spatial": Box(low=0.0, high=2.0, shape=(
+                len(ObservationIndex) + len(ActionIndex) * len(ActionRequirement().to_numpy())
+                + len(self.building_types) * len(BuildingTypeState(0).to_numpy()),
+            )),
+            "minimap": Box(low=0.0, high=1.0,
+                           shape=(11, PlannedActionEnv.map_dimensions[1], PlannedActionEnv.map_dimensions[0]))
+        })
         self.env: Optional[SC2Env] = None
         self.logger = logging.getLogger("PlannedActionEnv")
         self.raw_obs = None
@@ -301,7 +306,7 @@ class PlannedActionEnv(gym.Env):
         self.engineering_bay_index = 0
         self.armory_index = 0
 
-        return self.get_derived_obs()
+        return self.get_agent_observation()
 
     def step(self, action: int):
         self.rl_step += 1
@@ -320,10 +325,10 @@ class PlannedActionEnv(gym.Env):
 
         if self.should_surrender():
             self.register_episode_reward(-1)
-            return self.get_derived_obs(), -1 + shaped_rewards, True, {}
+            return self.get_agent_observation(), -1 + shaped_rewards, True, {}
         if self.raw_obs.last():
             self.register_episode_reward(self.raw_obs.reward)
-        return self.get_derived_obs(), self.raw_obs.reward + shaped_rewards, self.raw_obs.last(), {}
+        return self.get_agent_observation(), self.raw_obs.reward + shaped_rewards, self.raw_obs.last(), {}
 
     def update_states(self):
         self.building_states = self.get_building_type_states()
@@ -534,8 +539,14 @@ class PlannedActionEnv(gym.Env):
             units = list(filter(lambda u: u.alliance in alliance, units))
         return units
 
+    def get_agent_observation(self) -> Dict:
+        return {
+            "non_spatial": self.get_derived_obs(),
+            "minimap": self.get_minimap_obs()
+        }
+
     def get_derived_obs(self) -> np.ndarray:
-        obs = np.zeros(shape=self.observation_space.shape)
+        obs = np.zeros(shape=self.observation_space.spaces["non_spatial"].shape)
         player = self.raw_obs.observation.player
         obs[ObservationIndex.MINERALS] = player[Player.minerals] / 500
         obs[ObservationIndex.SUPPLY_TAKEN] = player[Player.food_used] / 200
@@ -598,6 +609,9 @@ class PlannedActionEnv(gym.Env):
             obs_index += building_state_len
 
         return obs
+
+    def get_minimap_obs(self) -> np.ndarray:
+        return np.array(self.raw_obs.observation.feature_minimap)
 
     def get_supply_taken(self) -> int:
         return self.raw_obs.observation.player[Player.food_used]
