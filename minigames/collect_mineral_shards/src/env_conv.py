@@ -32,7 +32,7 @@ class CollectMineralShardsConvEnv(gym.Env):
         }
         self.resolution = resolution
         self.action_space = MultiDiscrete([resolution * resolution, resolution * resolution])
-        self.observation_space = Box(low=0.0, high=1.0, shape=(resolution, resolution, 3))
+        self.observation_space = Box(low=0.0, high=1.0, shape=(3, resolution, resolution))
         self.env: Optional[SC2Env] = None
         self.logger = logging.getLogger("CollectMineralShardsEnv")
         self.unit_tags: List[int] = []
@@ -76,14 +76,14 @@ class CollectMineralShardsConvEnv(gym.Env):
 
     def get_derived_obs(self, raw_obs):
         obs = np.zeros(shape=self.observation_space.shape)
-        obs[:, :, 0] = raw_obs.observation.feature_screen["unit_type"] == 1680
+        obs[0, :, :] = raw_obs.observation.feature_screen["unit_type"] == 1680
         player_units = self.get_units(raw_obs)
         marine_positions = np.array([
             [player_units[0]["x"], player_units[0]["y"]],
             [player_units[1]["x"], player_units[1]["y"]]
         ])
         for idx, pos in enumerate(marine_positions):
-            obs[pos[0], pos[1], 1 + idx] = 1.0
+            obs[1 + idx, pos[0], pos[1]] = 1.0
         return obs
 
     @staticmethod

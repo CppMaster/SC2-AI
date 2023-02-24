@@ -28,15 +28,16 @@ class ImageToImagePolicy(nn.Module):
             out_features=n_value_neurons if i < n_value_layers - 1 else 1
         ) for i in range(n_value_layers)])
         self.value_features_layer = value_features_layer
-        self.flatten_action = nn.Flatten(start_dim=1, end_dim=2)
+        self.flatten_action = nn.Flatten(start_dim=2, end_dim=3)
         self.action_distribution = CategoricalDistribution(self.action_dim)
         self.optimizer = Adam(self.parameters())
+        self.device = torch.device("cuda")
 
     def forward(self, obs: torch.Tensor, deterministic: bool = False) -> (torch.Tensor, torch.Tensor, torch.Tensor):
         features = self.extract_features(obs)
         latent_pi = self.get_latent_pi(features)
         latent_pi_flattened = self.flatten_action(latent_pi)
-        distributions = [self.action_distribution.proba_distribution(latent_pi_flattened[:, :, i])
+        distributions = [self.action_distribution.proba_distribution(latent_pi_flattened[:, i])
                          for i in range(self.n_output_channels)]
         actions = [distribution.get_actions(deterministic=deterministic) for distribution in distributions]
         log_probs = [distribution.log_prob(action) for action, distribution in zip(actions, distributions)]
@@ -76,7 +77,7 @@ class ImageToImagePolicy(nn.Module):
         features = self.extract_features(obs)
         latent_pi = self.get_latent_pi(features)
         latent_pi_flattened = self.flatten_action(latent_pi)
-        distributions = [self.action_distribution.proba_distribution(latent_pi_flattened[:, :, i])
+        distributions = [self.action_distribution.proba_distribution(latent_pi_flattened[:, i])
                          for i in range(self.n_output_channels)]
         log_probs = [distributions[i].log_prob(actions[:, i]) for i in range(self.n_output_channels)]
         entropies = [distribution.entropy() for distribution in distributions]
