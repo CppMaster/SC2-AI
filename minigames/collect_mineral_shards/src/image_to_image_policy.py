@@ -1,7 +1,9 @@
 from typing import Tuple
 
+import gym
 import numpy as np
 import torch
+from stable_baselines3.common.type_aliases import Schedule
 from stable_baselines3.common.utils import obs_as_tensor
 from torch import nn
 from torch.nn import functional as F
@@ -11,7 +13,9 @@ from torch.optim import Adam
 
 class ImageToImagePolicy(nn.Module):
 
-    def __init__(self, n_conv_layers: int = 5, kernel_size: int = 3, value_features_layer: int = 3,
+    def __init__(self, observation_space: gym.spaces.Space, action_space: gym.spaces.Space,
+                 lr_schedule: Schedule, use_sde: bool = False,
+                 n_conv_layers: int = 5, kernel_size: int = 3, value_features_layer: int = 3,
                  n_input_channels: int = 3, n_hidden_channels: int = 16, n_output_channels: int = 2,
                  n_value_layers: int = 2, n_value_neurons: int = 64, grid_width: int = 16, grid_height: int = 16):
         super().__init__()
