@@ -8,9 +8,49 @@ from wrappers.utils import unwrap_wrapper_or_env
 
 
 class StopTrainingOnNoModelTrainingImprovement(BaseCallback):
+    """
+    Callback to stop training when no improvement is observed.
+    
+    This callback monitors the mean reward over a specified number of episodes
+    and stops training if no improvement is observed for a given number of evaluations.
 
+    Attributes
+    ----------
+    max_no_improvement_evals : int
+        Maximum number of evaluations without improvement before stopping.
+    min_evals : int
+        Minimum number of evaluations before checking for improvement.
+    mean_over_n_episodes : int
+        Number of episodes to average over for reward calculation.
+    eval_every_n_step : int
+        Number of steps between evaluations.
+    last_best_mean_reward : float
+        Previous best mean reward.
+    best_mean_reward : float
+        Current best mean reward.
+    no_improvement_evals : int
+        Number of evaluations without improvement.
+    n_evals : int
+        Total number of evaluations performed.
+    """
     def __init__(self, max_no_improvement_evals: int, min_evals: int = 0, verbose: int = 0,
-                 mean_over_n_episodes: int = 100, eval_every_n_step: int = 10000):
+                 mean_over_n_episodes: int = 100, eval_every_n_step: int = 10000) -> None:
+        """
+        Initialize the StopTrainingOnNoModelTrainingImprovement callback.
+
+        Parameters
+        ----------
+        max_no_improvement_evals : int
+            Maximum number of evaluations without improvement before stopping.
+        min_evals : int, optional
+            Minimum number of evaluations before checking for improvement (default is 0).
+        verbose : int, optional
+            Verbosity level (default is 0).
+        mean_over_n_episodes : int, optional
+            Number of episodes to average over for reward calculation (default is 100).
+        eval_every_n_step : int, optional
+            Number of steps between evaluations (default is 10000).
+        """
         super(StopTrainingOnNoModelTrainingImprovement, self).__init__(verbose=verbose)
         self.max_no_improvement_evals = max_no_improvement_evals
         self.min_evals = min_evals
@@ -22,10 +62,19 @@ class StopTrainingOnNoModelTrainingImprovement(BaseCallback):
         self.n_evals = 0
 
     def _on_step(self) -> bool:
+        """
+        Called at each training step to check for improvement.
+
+        Returns
+        -------
+        bool
+            True to continue training, False to stop.
+        """
         monitor = unwrap_wrapper_or_env(self.training_env, Monitor)
         if not isinstance(monitor, Monitor):
             raise RuntimeError("StopTrainingOnNoModelTrainingImprovement needs Monitor wrapper")
 
+        # Only evaluate every eval_every_n_step steps
         if self.n_calls % self.eval_every_n_step:
             return True
 
@@ -35,6 +84,8 @@ class StopTrainingOnNoModelTrainingImprovement(BaseCallback):
             logging.debug(f"Mean reward: {mean_reward}")
             self.best_mean_reward = max(mean_reward, self.best_mean_reward)
             logging.debug(f"Best mean reward: {self.best_mean_reward}")
+            
+            # Check if there's improvement
             if self.best_mean_reward > self.last_best_mean_reward:
                 self.no_improvement_evals = 0
             else:

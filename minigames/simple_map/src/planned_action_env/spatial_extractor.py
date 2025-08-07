@@ -7,12 +7,30 @@ from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 
 class SpatialExtractor(BaseFeaturesExtractor):
     """
-    :param observation_space: (gym.Space)
-    :param features_dim: (int) Number of features extracted.
-        This corresponds to the number of unit for the last layer.
-    """
+    Spatial feature extractor using CNN for processing minimap observations.
 
-    def __init__(self, observation_space: spaces.Box, features_dim: int = 256):
+    This extractor processes spatial data (like minimap observations) through
+    a series of convolutional layers to extract meaningful spatial features.
+
+    Parameters
+    ----------
+    observation_space : spaces.Box
+        The observation space containing spatial data.
+    features_dim : int, optional
+        Number of features extracted (default is 256).
+        This corresponds to the number of units for the last layer.
+    """
+    def __init__(self, observation_space: spaces.Box, features_dim: int = 256) -> None:
+        """
+        Initialize the SpatialExtractor.
+
+        Parameters
+        ----------
+        observation_space : spaces.Box
+            The observation space containing spatial data.
+        features_dim : int, optional
+            Number of features extracted (default is 256).
+        """
         super().__init__(observation_space, features_dim)
         # We assume CxHxW images (channels first)
         # Re-ordering will be done by pre-preprocessing or wrapper
@@ -36,4 +54,17 @@ class SpatialExtractor(BaseFeaturesExtractor):
         self.linear = nn.Sequential(nn.Linear(n_flatten, features_dim), nn.ReLU())
 
     def forward(self, observations: th.Tensor) -> th.Tensor:
+        """
+        Forward pass through the spatial extractor.
+
+        Parameters
+        ----------
+        observations : th.Tensor
+            Input observations tensor.
+
+        Returns
+        -------
+        th.Tensor
+            Extracted spatial features.
+        """
         return self.linear(self.cnn(observations))
