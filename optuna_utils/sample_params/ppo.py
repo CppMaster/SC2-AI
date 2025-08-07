@@ -6,19 +6,39 @@ from torch import nn
 
 def linear_schedule(initial_value: Union[float, str]) -> Callable[[float], float]:
     """
-    Linear learning rate schedule.
+    Create a linear learning rate schedule.
+    
+    This function returns a callable that implements a linear learning rate
+    schedule where the learning rate decreases linearly with training progress.
 
-    :param initial_value: (float or str)
-    :return: (function)
+    Parameters
+    ----------
+    initial_value : Union[float, str]
+        Initial learning rate value. If string, will be converted to float.
+
+    Returns
+    -------
+    Callable[[float], float]
+        A function that takes progress_remaining and returns the learning rate.
     """
     if isinstance(initial_value, str):
         initial_value = float(initial_value)
 
     def func(progress_remaining: float) -> float:
         """
-        Progress will decrease from 1 (beginning) to 0
-        :param progress_remaining: (float)
-        :return: (float)
+        Calculate learning rate based on remaining progress.
+        
+        Progress will decrease from 1 (beginning) to 0 (end).
+
+        Parameters
+        ----------
+        progress_remaining : float
+            Remaining progress from 1.0 to 0.0.
+
+        Returns
+        -------
+        float
+            The learning rate for the current progress.
         """
         return progress_remaining * initial_value
 
@@ -27,11 +47,23 @@ def linear_schedule(initial_value: Union[float, str]) -> Callable[[float], float
 
 def sample_ppo_params(trial: optuna.Trial) -> Dict[str, Any]:
     """
-    Sampler for PPO hyperparams.
+    Sample PPO hyperparameters using Optuna trial.
+    
+    This function suggests hyperparameters for PPO training using Optuna's
+    trial object. It covers a wide range of hyperparameters including
+    learning rate, batch size, network architecture, and training parameters.
 
-    :param trial:
-    :return:
+    Parameters
+    ----------
+    trial : optuna.Trial
+        The Optuna trial object for hyperparameter optimization.
+
+    Returns
+    -------
+    Dict[str, Any]
+        Dictionary containing the sampled hyperparameters for PPO.
     """
+    # Core training parameters
     batch_size = trial.suggest_categorical("batch_size", [8, 16, 32, 64, 128, 256, 512, 1024])
     n_steps = trial.suggest_categorical("n_steps", [8, 16, 32, 64, 128, 256, 512, 1024, 2048])
     gamma = trial.suggest_categorical("gamma", [0.5, 0.8, 0.9, 0.95, 0.98, 0.99, 0.995, 0.999, 0.9999])
@@ -48,31 +80,25 @@ def sample_ppo_params(trial: optuna.Trial) -> Dict[str, Any]:
     # log_std_init = trial.suggest_uniform("log_std_init", -4, 1)
     # Uncomment for gSDE (continuous action)
     # sde_sample_freq = trial.suggest_categorical("sde_sample_freq", [-1, 8, 16, 32, 64, 128, 256])
-    # Orthogonal initialization
+    
+    # Network architecture parameters
     ortho_init = trial.suggest_categorical('ortho_init', [False, True])
     activation_fn = trial.suggest_categorical('activation_fn', ['tanh', 'relu', 'elu', 'leaky_relu'])
 
-    # TODO: account when using multiple envs
+    # Ensure batch_size doesn't exceed n_steps
     if batch_size > n_steps:
         batch_size = n_steps
 
+    # Apply learning rate schedule if linear
     if lr_schedule == "linear":
         learning_rate = linear_schedule(learning_rate)
 
-    # Independent networks usually work best
-    # when not working with images
-    """
-    net_arch = trial.suggest_categorical("net_arch", ["tiny", "small", "medium"])
-    net_arch = {
-        "tiny": [dict(pi=[8, 8], vf=[8, 8])],
-        "small": [dict(pi=[64, 64], vf=[64, 64])],
-        "medium": [dict(pi=[256, 256], vf=[256, 256])],
-    }[net_arch]
-    """
+    # Network architecture configuration
     net_arch_width = trial.suggest_categorical("net_arch_width", [8, 16, 32, 64, 128, 256, 512])
     net_arch_depth = trial.suggest_int("net_arch_depth", 1, 3)
     net_arch = [dict(pi=[net_arch_width] * net_arch_depth, vf=[net_arch_width] * net_arch_depth)]
 
+    # Convert activation function string to PyTorch module
     activation_fn = {"tanh": nn.Tanh, "relu": nn.ReLU, "elu": nn.ELU, "leaky_relu": nn.LeakyReLU}[activation_fn]
 
     return {
