@@ -40,6 +40,7 @@ class CollectMineralShardsEnv(gym.Env):
         self.logger = logging.getLogger("CollectMineralShardsEnv")
         self.unit_tags: List[int] = []
         self.last_raw_obs = None
+        self.marine_index = 0
 
     def init_env(self):
         self.env = sc2_env.SC2Env(**self.settings)
@@ -49,6 +50,7 @@ class CollectMineralShardsEnv(gym.Env):
             self.last_raw_obs = self.env.step(self.get_actions(action))[0]
         else:
             self.last_raw_obs = self.env.step([])
+        self.marine_index = (self.marine_index + 1) % 2
         self.update_unit_tag(self.last_raw_obs)
         derived_obs = self.get_derived_obs(self.last_raw_obs)
         return derived_obs, self.last_raw_obs.reward, self.last_raw_obs.last(), {}
@@ -57,6 +59,8 @@ class CollectMineralShardsEnv(gym.Env):
         np_action = action.reshape((2, 2))
         mapped_actions = []
         for idx, tag in enumerate(self.unit_tags):
+            if self.marine_index != idx:
+                continue
             mapped_actions.append(actions.RAW_FUNCTIONS.Move_pt(
                 "now", tag, np_action[idx] * self.resolution + self.resolution * 0.5)
             )
@@ -81,10 +85,11 @@ class CollectMineralShardsEnv(gym.Env):
 
     @staticmethod
     def get_units(raw_obs):
-        return [unit for unit in raw_obs.observation.raw_units if unit.unit_type == units.Terran.Marine]
+        return sorted([unit for unit in raw_obs.observation.raw_units if unit.unit_type == units.Terran.Marine],
+                      key=lambda x: x.tag)
 
     def update_unit_tag(self, raw_obs):
-        self.unit_tags = [unit.tag for unit in self.get_units(raw_obs)]
+        self.unit_tags = sorted([unit.tag for unit in self.get_units(raw_obs)])
 
     def render(self, mode="human"):
         pass

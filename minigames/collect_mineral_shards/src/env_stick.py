@@ -13,6 +13,8 @@ class CollectMineralShardsStickEnv(CollectMineralShardsEnv):
         minerals_positions = np.array([[mineral.x, mineral.y] for mineral in minerals])
         mapped_actions = []
         for idx, tag in enumerate(self.unit_tags):
+            if self.marine_index != idx:
+                continue
             pos = np_action[idx] * self.resolution + self.resolution * 0.5
             target_pos = minerals_positions[np.sum(np.power(minerals_positions - pos, 2), axis=1).argmin()]
             mapped_actions.append(actions.RAW_FUNCTIONS.Move_pt("now", tag, target_pos))

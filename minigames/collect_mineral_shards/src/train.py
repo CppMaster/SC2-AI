@@ -16,16 +16,16 @@ FLAGS(sys.argv)
 
 logging.basicConfig(encoding='utf-8', level=logging.INFO)
 
-env = CollectMineralShardsStickEnv(step_mul=4)
+env = CollectMineralShardsStickEnv(step_mul=1)
 env = Monitor(env)
-env = RepeatActionUntilReward(env, frame_punish=-0.1)
-eval_path = "minigames/collect_mineral_shards/eval_ra4"
+# env = RepeatActionUntilReward(env, frame_punish=-0.1)
+eval_path = "minigames/collect_mineral_shards/eval_single_action"
 stop_callback = StopTrainingOnNoModelImprovement(max_no_improvement_evals=30, min_evals=50, verbose=1)
 eval_callback = EvalCallback(env, best_model_save_path=eval_path, log_path=eval_path,
                              eval_freq=10000, deterministic=False, render=False,
                              callback_after_eval=stop_callback)
 
-model = PPO('MultiInputPolicy', env, verbose=1, tensorboard_log="minigames/collect_mineral_shards/logs", gamma=0.99)
-# model = PPO.load("minigames/collect_mineral_shards/eval/best_model.zip", env=env)
-model.learn(10000000, callback=eval_callback)
-
+# model = PPO('MultiInputPolicy', env, verbose=1, tensorboard_log="minigames/collect_mineral_shards/logs", gamma=0.99)
+model = PPO.load("minigames/collect_mineral_shards/models/fix_2.zip", env=env)
+# model.learn(10000000, callback=eval_callback)
+model.learn(10000000, reset_num_timesteps=False)
