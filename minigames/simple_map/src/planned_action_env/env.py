@@ -6,7 +6,7 @@ import random
 from collections import defaultdict
 from dataclasses import dataclass, field
 from enum import IntEnum
-from typing import Optional, List, Set, Union, Dict, Tuple
+from typing import Optional, List, Set, Union, Dict, Tuple, Any
 
 import gym
 import numpy as np
@@ -24,8 +24,10 @@ from minigames.collect_minerals_and_gas.src.env import OrderId
 from minigames.simple_map.src.planned_action_env.difficulty_scheduler import DifficultyScheduler
 from minigames.simple_map.src.planned_action_env.reward_shaper import RewardShaper
 
-
 class ActionIndex(IntEnum):
+    """
+    Enumeration for action indices in the action space.
+    """
     BUILD_MARINE = 0
     BUILD_SCV = 1
     BUILD_SUPPLY = 2
@@ -43,8 +45,10 @@ class ActionIndex(IntEnum):
     BUILD_ARMORY = 14
     RESEARCH_INFANTRY_ARMOR = 15
 
-
 class ObservationIndex(IntEnum):
+    """
+    Enumeration for observation indices in the observation space.
+    """
     MINERALS = 0  # scale 500
     SUPPLY_TAKEN = 1  # scale 200
     SUPPLY_ALL = 2  # scale 200
@@ -72,7 +76,6 @@ class ObservationIndex(IntEnum):
     FACTORY_COUNT = 24
     IS_FACTORY_BUILDING = 25
     INFANTRY_ARMOR_COMPLETED = 26  # scale 3
-
 
 supply_limit = 200
 cc_optimal_workers = 16
@@ -103,9 +106,24 @@ action_to_upgrade = {
                                           Upgrades.TerranInfantryArmorsLevel3}
 }
 
-
 @dataclass
 class ActionRequirement:
+    """
+    Represents the requirements for performing an action.
+
+    Attributes
+    ----------
+    minerals : bool
+        Whether minerals are required.
+    vespene : bool
+        Whether vespene gas is required.
+    buildings : List[int]
+        List of required buildings.
+    queue : bool
+        Whether the action is queued.
+    invalid : bool
+        Whether the action is invalid.
+    """
     minerals: bool = False
     vespene: bool = False
     buildings: List[int] = field(default_factory=lambda: [])
@@ -114,24 +132,78 @@ class ActionRequirement:
 
     @property
     def can_do_instantly(self) -> bool:
+        """
+        Returns whether the action can be performed instantly.
+
+        Returns
+        -------
+        bool
+            True if the action can be performed instantly, False otherwise.
+        """
         return not self.minerals and not self.vespene and len(self.buildings) == 0 and not self.queue \
                and not self.invalid
 
     def to_numpy(self) -> np.ndarray:
+        """
+        Convert the action requirement to a numpy array.
+
+        Returns
+        -------
+        np.ndarray
+            Array representation of the action requirement.
+        """
         return np.array([self.minerals, self.vespene, len(self.buildings), self.queue, self.invalid,
                          self.can_do_instantly])
 
-
 class BuildingTypeState(IntEnum):
+    """
+    Represents the state of a building type.
+    """
     NOT_PRESENT = 0
     IS_BUILDING = 1
     IS_BUILT = 2
 
     def to_numpy(self) -> np.ndarray:
+        """
+        Convert the building type state to a one-hot numpy array.
+
+        Returns
+        -------
+        np.ndarray
+            One-hot array representation of the building type state.
+        """
         return np.identity(len(self.__class__))[self.value]
 
-
 class PlannedActionEnv(gym.Env):
+    """
+    Custom Gym environment for the Simple64_towers StarCraft II minigame with planned actions.
+
+    Attributes
+    ----------
+    metadata : dict
+        Metadata for rendering modes.
+    map_dimensions : tuple
+        Dimensions of the map.
+    base_locations : list
+        List of base locations.
+    attack_locations : list
+        List of attack path points.
+    upgrade_building_locations : list
+        List of upgrade building locations.
+    target_tags_to_ignore : set
+        Tags of units to ignore for proximity calculation.
+    minerals_tags : set
+        Tags of mineral resources.
+    max_game_step : int
+        Maximum number of game steps.
+    army_actions : set
+        Set of actions that involve military units.
+    building_types : list
+        List of all possible building types.
+    production_building_types : set
+        Set of building types that produce units.
+    (Other attributes are set in __init__)
+    """
     metadata = {'render.modes': ['human']}
     map_dimensions = (88, 96)
     base_locations = [(26, 35), (57, 31), (23, 72), (54, 68)]
@@ -161,6 +233,34 @@ class PlannedActionEnv(gym.Env):
                  free_supply_margin_factor: float = 2.0, output_path: Optional[str] = None,
                  difficulty_scheduler: Optional[DifficultyScheduler] = None,
                  max_refineries: int = 2):
+        """
+        Initialize the PlannedActionEnv environment.
+
+        Parameters
+        ----------
+        step_mul : int, optional
+            Number of game steps per agent step (default is 8).
+        realtime : bool, optional
+            Whether to run in real-time mode (default is False).
+        difficulty : Difficulty, optional
+            Difficulty of the enemy bot (default is Difficulty.medium).
+        enemy_race : sc2_env.Race, optional
+            Race of the enemy bot (default is Race.random).
+        reward_shapers : list of RewardShaper, optional
+            List of reward shapers to use (default is None).
+        time_to_finishing_move : float, optional
+            Time threshold for finishing move (default is 0.8).
+        supply_to_finishing_move : int, optional
+            Supply threshold for finishing move (default is 200).
+        free_supply_margin_factor : float, optional
+            Margin factor for free supply (default is 2.0).
+        output_path : str, optional
+            Path to save episode rewards (default is None).
+        difficulty_scheduler : DifficultyScheduler, optional
+            Scheduler for dynamic difficulty (default is None).
+        max_refineries : int, optional
+            Maximum number of refineries (default is 2).
+        """
         self.settings = {
             'map_name': "Simple64_towers",
             'players': [sc2_env.Agent(sc2_env.Race.terran), sc2_env.Bot(enemy_race, difficulty)],
