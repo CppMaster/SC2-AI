@@ -6,6 +6,12 @@ Reinforcement learning agents and utilities for StarCraft II mini-games using Py
 
 Videos of training runs and results live at https://www.youtube.com/@psai5367.
 
+## Example runs
+
+**Beating Zerg:** [Watch on YouTube](https://youtu.be/g54lGquzb1U?si=Z1Zd6yvhHcxULaB9)
+
+[![Beating Zerg](https://img.youtube.com/vi/g54lGquzb1U/hqdefault.jpg)](https://youtu.be/g54lGquzb1U?si=Z1Zd6yvhHcxULaB9 "Play on YouTube")
+
 ## Prerequisites
 - Python 3.8+ (tested with SB3 1.6.0 and PySC2 3.0.0)
 - StarCraft II installed locally with the official mini-games maps available to PySC2
