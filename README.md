@@ -1,6 +1,10 @@
 # SC2-AI
 
-Reinforcement learning agents and utilities for StarCraft II mini-games using PySC2 and Stable-Baselines3. Each mini-game folder contains custom Gym-style environments, reward wrappers, and training scripts for experimenting with different tasks such as MoveToBeacon, CollectMineralShards, SimpleMap, and more.
+This is a hobby project for learning RL: the agents train from scratch without any human supervisor. 
+
+Reinforcement learning agents and utilities for StarCraft II mini-games using PySC2 and Stable-Baselines3. Each mini-game folder contains custom Gym-style environments, reward wrappers, and training scripts for experimenting with different tasks such as MoveToBeacon, CollectMineralShards, SimpleMap, and more. 
+
+Videos of training runs and results live at https://www.youtube.com/@psai5367.
 
 ## Prerequisites
 - Python 3.8+ (tested with SB3 1.6.0 and PySC2 3.0.0)
@@ -38,12 +42,6 @@ Reinforcement learning agents and utilities for StarCraft II mini-games using Py
 - `optuna_utils/` — Optuna study helpers and sample hyperparameter spaces.
 - `utils/` — plotting and value utilities.
 - `tests/` — lightweight unit tests (e.g., value stack helpers).
-
-## Testing
-Run the small test suite with:
-```bash
-pytest
-```
 
 ## Notes
 - Training scripts assume SC2 assets are installed; PySC2 will prompt if maps are missing.
