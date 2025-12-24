@@ -20,7 +20,7 @@ Videos of training runs and results live at https://www.youtube.com/@psai5367.
 
 [![Beating Terran](https://img.youtube.com/vi/UcH7l4qhizk/hqdefault.jpg)](https://www.youtube.com/watch?v=UcH7l4qhizk "Play on YouTube")
 
-Training scripts that produced these runs are in `minigames/simple_map/src/planned_action_env/train.py`.
+Training scripts that produced these runs are in [minigames/simple_map/src/planned_action_env](minigames/simple_map/src/planned_action_env).
 
 ## Prerequisites
 - Python 3.8+ (tested with SB3 1.6.0 and PySC2 3.0.0)
