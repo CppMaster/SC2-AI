@@ -6,6 +6,8 @@ Reinforcement learning agents and utilities for StarCraft II mini-games using Py
 
 Videos of training runs and results live at https://www.youtube.com/@psai5367.
 
+PowerPoint presentation: [My AI for StarCraft II (PPTX)](docs/My%20AI%20for%20StarCraft%20II.pptx)
+
 ## Example runs
 
 **Beating Zerg:** [Watch on YouTube](https://youtu.be/g54lGquzb1U)
