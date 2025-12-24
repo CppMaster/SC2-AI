@@ -8,9 +8,17 @@ Videos of training runs and results live at https://www.youtube.com/@psai5367.
 
 ## Example runs
 
-**Beating Zerg:** [Watch on YouTube](https://youtu.be/g54lGquzb1U?si=Z1Zd6yvhHcxULaB9)
+**Beating Zerg:** [Watch on YouTube](https://youtu.be/g54lGquzb1U)
 
-[![Beating Zerg](https://img.youtube.com/vi/g54lGquzb1U/hqdefault.jpg)](https://youtu.be/g54lGquzb1U?si=Z1Zd6yvhHcxULaB9 "Play on YouTube")
+[![Beating Zerg](https://img.youtube.com/vi/g54lGquzb1U/hqdefault.jpg)](https://youtu.be/g54lGquzb1U "Play on YouTube")
+
+**Beating Protoss:** [Watch on YouTube](https://www.youtube.com/watch?v=bDCS9uYxDRY)
+
+[![Beating Protoss](https://img.youtube.com/vi/bDCS9uYxDRY/hqdefault.jpg)](https://www.youtube.com/watch?v=bDCS9uYxDRY "Play on YouTube")
+
+**Beating Terran:** [Watch on YouTube](https://www.youtube.com/watch?v=UcH7l4qhizk)
+
+[![Beating Terran](https://img.youtube.com/vi/UcH7l4qhizk/hqdefault.jpg)](https://www.youtube.com/watch?v=UcH7l4qhizk "Play on YouTube")
 
 ## Prerequisites
 - Python 3.8+ (tested with SB3 1.6.0 and PySC2 3.0.0)
